@@ -12,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/dennis-tra/nebula-crawler/core"
@@ -49,6 +50,7 @@ func NewDialDriver(dbc db.Client, cfg *DialDriverConfig) (*DialDriver, error) {
 		libp2p.UserAgent("nebula/"+cfg.Version),
 		libp2p.ResourceManager(&rm),
 		libp2p.ConnectionManager(cm),
+		libp2p.Security(noise.ID, noise.New),
 		libp2p.DisableMetrics(),
 		libp2p.SwarmOpts(swarm.WithReadOnlyBlackHoleDetector()),
 		libp2p.UDPBlackHoleSuccessCounter(nil),
