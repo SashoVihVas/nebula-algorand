@@ -60,6 +60,8 @@ retryLoop:
 		if _, err := d.host.Network().DialPeer(timeoutCtx, pi.ID); err != nil {
 			cancel()
 
+			log.WithError(err).Errorf("Dialer failed to connect to peer %s. Full error: %v", pi.ID.ShortString(), err)
+
 			dr.Error = err
 			dr.DialError = db.NetError(dr.Error)
 

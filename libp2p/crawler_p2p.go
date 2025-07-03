@@ -241,8 +241,11 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 
 		// yay, it worked! Or has it? The caller checks the connectedness again.
 		if err == nil {
+			log.Infof("Successfully connected to peer %s", pi.ID.ShortString())
 			return conn, nil
 		}
+
+		log.WithError(err).Errorf("Failed to connect to peer %s. Full error: %v", pi.ID.ShortString(), err)
 
 		switch true {
 		case strings.Contains(err.Error(), db.ErrorStr[pgmodels.NetErrorConnectionRefused]):
