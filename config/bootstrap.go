@@ -414,4 +414,12 @@ var (
 		"enr:-LO4QO87Rn2ejN3SZdXkx7kv8m11EZ3KWWqoIN5oXwQ7iXR9CVGd1dmSyWxOL1PGsdIqeMf66OZj4QGEJckSi6okCdWBpIdhdHRuZXRziAAAAABgAAAAhGV0aDKQPr_UhAQAAGT__________4JpZIJ2NIJpcIQj0iX1iXNlY3AyNTZrMaEDd-_eqFlWWJrUfEp8RhKT9NxdYaZoLHvsp3bbejPyOoeDdGNwgiMog3VkcIIjKA",
 		"enr:-LK4QIJUAxX9uNgW4ACkq8AixjnSTcs9sClbEtWRq9F8Uy9OEExsr4ecpBTYpxX66cMk6pUHejCSX3wZkK2pOCCHWHEBh2F0dG5ldHOIAAAAAAAAAACEZXRoMpA-v9SEBAAAZP__________gmlkgnY0gmlwhCPSnDuJc2VjcDI1NmsxoQNuaAjFE-ANkH3pbeBdPiEIwjR5kxFuKaBWxHkqFuPz5IN0Y3CCIyiDdWRwgiMo",
 	}
+
+	BootstrapPeersAlgoTestnet = []string{
+		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+	}
+	
+	BootstrapPeersAlgoMainnet = []string{
+		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+	}
 )
