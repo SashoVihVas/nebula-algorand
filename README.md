@@ -8,6 +8,8 @@
 [![GitHub license](https://img.shields.io/github/license/dennis-tra/nebula)](https://github.com/dennis-tra/nebula/blob/main/LICENSE)
 [![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Fdennis-tra%2Fnebula&count_bg=%2379C83D&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=hits&edge_flat=false)](https://hits.seeyoufarm.com)
 
+!Custom version to work with Algorand!
+
 A network agnostic peer crawler and monitor. Nebula starts with a set of bootstrap peers, 
 asks them for other peers in the network and recursively repeats the process until all
 peers in the network have been contacted. Originally, Nebula only supported DHT
