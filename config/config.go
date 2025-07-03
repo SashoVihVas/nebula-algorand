@@ -700,7 +700,7 @@ func ConfigureNetwork(network string) (*cli.StringSlice, *cli.StringSlice, error
 		protocols = cli.NewStringSlice("d5waku")
 	case NetworkAlgoTestnet:
 		bootstrapPeers = cli.NewStringSlice(BootstrapPeersAlgoTestnet...)
-		protocols = cli.NewStringSlice("/algorand/kad/mainnet-v1.0")
+		protocols = cli.NewStringSlice("/algorand/kad/testnet-v1.0")
 	case NetworkAlgoMainnet:
 		bootstrapPeers = cli.NewStringSlice(BootstrapPeersAlgoMainnet...)
 		protocols = cli.NewStringSlice("/algorand/kad/mainnet-v1.0")
