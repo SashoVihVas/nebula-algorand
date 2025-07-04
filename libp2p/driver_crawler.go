@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,15 +121,26 @@ func setHeaders(header http.Header, netProtoVer string, meta peerMetadataProvide
 func checkProtocolVersionMatch(otherHeaders http.Header, ourSupportedProtocolVersions []string) (string, string) {
 	otherAcceptedVersions := otherHeaders[textproto.CanonicalMIMEHeaderKey(ProtocolAcceptVersionHeader)]
 	for _, otherAcceptedVersion := range otherAcceptedVersions {
-		if slices.Contains(ourSupportedProtocolVersions, otherAcceptedVersion) {
-			return otherAcceptedVersion, ""
+		// --- Start of suggested change ---
+		for _, ourProto := range ourSupportedProtocolVersions {
+			// Check if our full protocol ID (e.g., "/algorand-ws/2.2.0")
+			// ends with the node's version (e.g., "/2.2" or "/2.2.0")
+			if strings.HasSuffix(ourProto, "/"+otherAcceptedVersion) || strings.HasSuffix(ourProto, "/"+otherAcceptedVersion+".0") {
+				return otherAcceptedVersion, ""
+			}
 		}
+		// --- End of suggested change ---
 	}
 
 	otherVersion := otherHeaders.Get(ProtocolVersionHeader)
-	if slices.Contains(ourSupportedProtocolVersions, otherVersion) {
-		return otherVersion, otherVersion
+	// --- Start of suggested change ---
+	for _, ourProto := range ourSupportedProtocolVersions {
+		if strings.HasSuffix(ourProto, "/"+otherVersion) || strings.HasSuffix(ourProto, "/"+otherVersion+".0") {
+			return otherVersion, otherVersion
+		}
 	}
+	// --- End of suggested change ---
+
 	return "", otherVersion
 }
 
@@ -198,6 +208,7 @@ func readPeerMetaHeaders(stream io.ReadWriter, p2pPeer peer.ID, netProtoSupporte
 		err0 := fmt.Errorf("error reading response message length from peer %s: %w", p2pPeer, err)
 		return peerMetaInfo{}, err0
 	}
+	log.WithField("Received message's length:", msgLenBytes).Info("TRALALALA")
 
 	msgLen := binary.BigEndian.Uint16(msgLenBytes[:])
 	msgBytes := make([]byte, msgLen)
@@ -206,6 +217,8 @@ func readPeerMetaHeaders(stream io.ReadWriter, p2pPeer peer.ID, netProtoSupporte
 		err0 := fmt.Errorf("error reading response message from peer %s: %w, expected: %d, read: %d", p2pPeer, err, msgLen, rn)
 		return peerMetaInfo{}, err0
 	}
+	log.Infof("Received message from %s: %x", p2pPeer, msgBytes)
+
 	var responseHeaders peerMetaHeaders
 	_, err = responseHeaders.UnmarshalMsg(msgBytes[:])
 	if err != nil {
@@ -242,6 +255,7 @@ func writePeerMetaHeaders(stream io.ReadWriter, p2pPeer peer.ID, networkProtoVer
 	metaMsg := make([]byte, 2+length)
 	binary.BigEndian.PutUint16(metaMsg, uint16(length))
 	copy(metaMsg[2:], data)
+	log.WithField("Received message:", metaMsg).Info("LALALA")
 	_, err = stream.Write(metaMsg)
 	if err != nil {
 		err0 := fmt.Errorf("error sending initial message: %w", err)
@@ -259,20 +273,22 @@ func (d *CrawlDriver) algorandStreamHandler(stream network.Stream) {
 
 	var err error
 	var pmi peerMetaInfo
-	if stream.Stat().Direction == network.DirInbound {
-		pmi, err = readPeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.cfg.Protocols)
+	if stream.Stat().Direction == network.DirOutbound {
+		log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("WE ARE INBOUND")
+		err = writePeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.protocolVersion, d)
 		if err != nil {
 			log.WithError(err).Warn("error reading peer meta headers")
 			_ = stream.Reset()
 			return
 		}
-		err = writePeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.protocolVersion, d)
+		pmi, err = readPeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.cfg.Protocols)
 		if err != nil {
 			log.WithError(err).Warn("error writing peer meta headers")
 			_ = stream.Reset()
 			return
 		}
 	} else {
+		log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("WE ARE OUTBOUND")
 		err = writePeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.protocolVersion, d)
 		if err != nil {
 			log.WithError(err).Warn("error writing peer meta headers")
