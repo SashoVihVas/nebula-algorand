@@ -12,7 +12,6 @@ import (
 
 	"github.com/dennis-tra/nebula-crawler/config"
 	"github.com/dennis-tra/nebula-crawler/core"
-	"github.com/dennis-tra/nebula-crawler/discv5"
 	"github.com/dennis-tra/nebula-crawler/libp2p"
 )
 
@@ -113,25 +112,6 @@ func MonitorAction(c *cli.Context) error {
 
 	switch monitorConfig.Network {
 	case string(config.NetworkEthCons):
-		driverCfg := &discv5.DialDriverConfig{
-			Version: monitorConfig.Root.Version(),
-		}
-
-		driver, err := discv5.NewDialDriver(dbc, driverCfg)
-		if err != nil {
-			return fmt.Errorf("new driver: %w", err)
-		}
-
-		handler := core.NewDialHandler[discv5.PeerInfo](handlerCfg)
-		eng, err := core.NewEngine[discv5.PeerInfo, core.DialResult[discv5.PeerInfo]](driver, handler, engineCfg)
-		if err != nil {
-			return fmt.Errorf("new engine: %w", err)
-		}
-
-		_, err = eng.Run(c.Context)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("running crawl engine: %w", err)
-		}
 
 	default:
 		driverCfg := &libp2p.DialDriverConfig{

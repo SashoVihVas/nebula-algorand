@@ -16,14 +16,11 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 
-	"github.com/dennis-tra/nebula-crawler/bitcoin"
 	"github.com/dennis-tra/nebula-crawler/config"
 	"github.com/dennis-tra/nebula-crawler/core"
 	"github.com/dennis-tra/nebula-crawler/db"
-	"github.com/dennis-tra/nebula-crawler/discv4"
-	"github.com/dennis-tra/nebula-crawler/discv5"
 	"github.com/dennis-tra/nebula-crawler/libp2p"
-	"github.com/dennis-tra/nebula-crawler/utils"
+	// "github.com/dennis-tra/nebula-crawler/utils"
 )
 
 var crawlConfig = &config.Crawl{
@@ -274,94 +271,8 @@ func CrawlAction(c *cli.Context) error {
 	switch cfg.Network {
 	case string(config.NetworkEthExec):
 
-		bpEnodes, err := cfg.BootstrapEnodesV4()
-		if err != nil {
-			return err
-		}
-
-		for _, addrInfo := range bpAddrInfos {
-			n, err := utils.ToEnode(addrInfo.ID, addrInfo.Addrs)
-			if err != nil {
-				// this is just a best-effort operation so only
-				// log the error and continue
-				log.WithError(err).WithFields(log.Fields{
-					"pid":    addrInfo.ID,
-					"maddrs": addrInfo.Addrs,
-				}).Warnln("Failed transforming AddrInfo to *enode.Node")
-				continue
-			}
-			bpEnodes = append(bpEnodes, n)
-		}
-
-		// configure the crawl driver
-		driverCfg := &discv4.CrawlDriverConfig{
-			Version:          cfg.Root.Version(),
-			DialTimeout:      cfg.Root.DialTimeout,
-			CrawlWorkerCount: cfg.CrawlWorkerCount,
-			BootstrapPeers:   bpEnodes,
-			AddrDialType:     cfg.AddrDialType(),
-			TracerProvider:   cfg.Root.TracerProvider,
-			MeterProvider:    cfg.Root.MeterProvider,
-			LogErrors:        cfg.Root.LogErrors,
-			KeepENR:          cfg.KeepENR,
-			UDPBufferSize:    cfg.Root.UDPBufferSize,
-			UDPRespTimeout:   cfg.UDPRespTimeout,
-		}
-
-		// init the crawl driver
-		driver, err := discv4.NewCrawlDriver(dbc, driverCfg)
-		if err != nil {
-			return fmt.Errorf("new discv4 driver: %w", err)
-		}
-
-		// init the result handler
-		handler := core.NewCrawlHandler[discv4.PeerInfo](handlerCfg)
-
-		// put everything together and init the engine that'll run the crawl
-		eng, err := core.NewEngine[discv4.PeerInfo, core.CrawlResult[discv4.PeerInfo]](driver, handler, engineCfg)
-		if err != nil {
-			return fmt.Errorf("new engine: %w", err)
-		}
-
-		// finally, start the crawl
-		summary, runErr = eng.Run(ctx)
-
 	case string(config.NetworkBitcoin):
-		bpEnodes, err := cfg.BootstrapBitcoinEntries()
-		if err != nil {
-			return err
-		}
 
-		for _, addrInfo := range bpAddrInfos {
-			bpEnodes = append(bpEnodes, addrInfo.Addrs...)
-		}
-		// configure the crawl driver
-		driverCfg := &bitcoin.CrawlDriverConfig{
-			Version:        cfg.Root.Version(),
-			DialTimeout:    cfg.Root.DialTimeout,
-			BootstrapPeers: bpEnodes,
-			TracerProvider: cfg.Root.TracerProvider,
-			MeterProvider:  cfg.Root.MeterProvider,
-			LogErrors:      cfg.Root.LogErrors,
-		}
-
-		// init the crawl driver
-		driver, err := bitcoin.NewCrawlDriver(dbc, driverCfg)
-		if err != nil {
-			return fmt.Errorf("new bitcoin driver: %w", err)
-		}
-
-		// init the result handler
-		handler := core.NewCrawlHandler[bitcoin.PeerInfo](handlerCfg)
-
-		// put everything together and init the engine that'll run the crawl
-		eng, err := core.NewEngine[bitcoin.PeerInfo, core.CrawlResult[bitcoin.PeerInfo]](driver, handler, engineCfg)
-		if err != nil {
-			return fmt.Errorf("new engine: %w", err)
-		}
-
-		// finally, start the crawl
-		summary, runErr = eng.Run(ctx)
 
 	case string(config.NetworkEthCons),
 		string(config.NetworkHolesky),
@@ -371,68 +282,68 @@ func CrawlAction(c *cli.Context) error {
 		string(config.NetworkGnosis):
 		// use a different driver etc. for the Ethereum consensus layer + Holeksy Testnet + Waku networks
 
-		bpEnodes, err := cfg.BootstrapEnodesV5()
-		if err != nil {
-			return err
-		}
+		// bpEnodes, err := cfg.BootstrapEnodesV5()
+		// if err != nil {
+		// 	return err
+		// }
 
-		for _, addrInfo := range bpAddrInfos {
-			n, err := utils.ToEnode(addrInfo.ID, addrInfo.Addrs)
-			if err != nil {
-				// this is just a best-effort operation so only
-				// log the error and continue
-				log.WithError(err).WithFields(log.Fields{
-					"pid":    addrInfo.ID,
-					"maddrs": addrInfo.Addrs,
-				}).Warnln("Failed transforming AddrInfo to *enode.Node")
-				continue
-			}
-			bpEnodes = append(bpEnodes, n)
-		}
+		// for _, addrInfo := range bpAddrInfos {
+		// 	n, err := utils.ToEnode(addrInfo.ID, addrInfo.Addrs)
+		// 	if err != nil {
+		// 		// this is just a best-effort operation so only
+		// 		// log the error and continue
+		// 		log.WithError(err).WithFields(log.Fields{
+		// 			"pid":    addrInfo.ID,
+		// 			"maddrs": addrInfo.Addrs,
+		// 		}).Warnln("Failed transforming AddrInfo to *enode.Node")
+		// 		continue
+		// 	}
+		// 	bpEnodes = append(bpEnodes, n)
+		// }
 
-		protocolID, err := cfg.DiscV5ProtocolID()
-		if err != nil {
-			return fmt.Errorf("parse discv5 protocol ID: %w", err)
-		}
+		// protocolID, err := cfg.DiscV5ProtocolID()
+		// if err != nil {
+		// 	return fmt.Errorf("parse discv5 protocol ID: %w", err)
+		// }
 
-		wakuClusterID, wakuClusterShards := cfg.WakuClusterConfig()
+		// wakuClusterID, wakuClusterShards := cfg.WakuClusterConfig()
 
-		// configure the crawl driver
-		driverCfg := &discv5.CrawlDriverConfig{
-			Version:           cfg.Root.Version(),
-			Network:           config.Network(cfg.Network),
-			DialTimeout:       cfg.Root.DialTimeout,
-			BootstrapPeers:    bpEnodes,
-			CrawlWorkerCount:  cfg.CrawlWorkerCount,
-			AddrDialType:      cfg.AddrDialType(),
-			KeepENR:           crawlConfig.KeepENR,
-			TracerProvider:    cfg.Root.TracerProvider,
-			MeterProvider:     cfg.Root.MeterProvider,
-			LogErrors:         cfg.Root.LogErrors,
-			Discv5ProtocolID:  protocolID,
-			UDPBufferSize:     cfg.Root.UDPBufferSize,
-			UDPRespTimeout:    cfg.UDPRespTimeout,
-			WakuClusterID:     wakuClusterID,
-			WakuClusterShards: wakuClusterShards,
-		}
+		// // configure the crawl driver
+		// driverCfg := &discv5.CrawlDriverConfig{
+		// 	Version:           cfg.Root.Version(),
+		// 	Network:           config.Network(cfg.Network),
+		// 	DialTimeout:       cfg.Root.DialTimeout,
+		// 	BootstrapPeers:    bpEnodes,
+		// 	CrawlWorkerCount:  cfg.CrawlWorkerCount,
+		// 	AddrDialType:      cfg.AddrDialType(),
+		// 	KeepENR:           crawlConfig.KeepENR,
+		// 	TracerProvider:    cfg.Root.TracerProvider,
+		// 	MeterProvider:     cfg.Root.MeterProvider,
+		// 	LogErrors:         cfg.Root.LogErrors,
+		// 	Discv5ProtocolID:  protocolID,
+		// 	UDPBufferSize:     cfg.Root.UDPBufferSize,
+		// 	UDPRespTimeout:    cfg.UDPRespTimeout,
+		// 	WakuClusterID:     wakuClusterID,
+		// 	WakuClusterShards: wakuClusterShards,
+		// }
 
-		// init the crawl driver
-		driver, err := discv5.NewCrawlDriver(dbc, driverCfg)
-		if err != nil {
-			return fmt.Errorf("new discv5 driver: %w", err)
-		}
+		// // init the crawl driver
+		// driver, err := discv5.NewCrawlDriver(dbc, driverCfg)
+		// if err != nil {
+		// 	return fmt.Errorf("new discv5 driver: %w", err)
+		// }
 
-		// init the result handler
-		handler := core.NewCrawlHandler[discv5.PeerInfo](handlerCfg)
+		// // init the result handler
+		// handler := core.NewCrawlHandler[discv5.PeerInfo](handlerCfg)
 
-		// put everything together and init the engine that'll run the crawl
-		eng, err := core.NewEngine[discv5.PeerInfo, core.CrawlResult[discv5.PeerInfo]](driver, handler, engineCfg)
-		if err != nil {
-			return fmt.Errorf("new engine: %w", err)
-		}
+		// // put everything together and init the engine that'll run the crawl
+		// eng, err := core.NewEngine[discv5.PeerInfo, core.CrawlResult[discv5.PeerInfo]](driver, handler, engineCfg)
+		// if err != nil {
+		// 	return fmt.Errorf("new engine: %w", err)
+		// }
 
-		// finally, start the crawl
-		summary, runErr = eng.Run(ctx)
+		// // finally, start the crawl
+		// summary, runErr = eng.Run(ctx)
 
 	default:
 
