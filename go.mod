@@ -54,6 +54,8 @@ require (
 	golang.org/x/sync v0.13.0
 )
 
+require github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c // indirect
+
 require (
 	github.com/ClickHouse/ch-go v0.64.1 // indirect
 	github.com/DataDog/zstd v1.5.6 // indirect
@@ -209,6 +211,7 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/supranational/blst v0.3.14 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20220614013038-64ee5596c38a // indirect
+	github.com/tinylib/msgp v1.3.0
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
 	github.com/tklauser/numcpus v0.9.0 // indirect
 	github.com/vishvananda/netlink v1.3.0 // indirect
