@@ -2,9 +2,7 @@ package libp2p
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -23,21 +21,6 @@ import (
 	"github.com/dennis-tra/nebula-crawler/db"
 	pgmodels "github.com/dennis-tra/nebula-crawler/db/models/pg"
 )
-
-
-//msgp:allocbound peerMetaValues 16
-type peerMetaValues []string
-
-//msgp:allocbound peerMetaHeaders 64
-type peerMetaHeaders map[string]peerMetaValues
-
-func peerMetaHeadersFromHTTPHeaders(headers http.Header) peerMetaHeaders {
-	pmh := make(peerMetaHeaders, len(headers))
-	for k, v := range headers {
-		pmh[k] = v
-	}
-	return pmh
-}
 
 type P2PResult struct {
 	RoutingTable *core.RoutingTable[PeerInfo]
@@ -85,90 +68,143 @@ type P2PResult struct {
 // Connection attempts and errors are tracked for debugging or analysis.
 // It supports context cancellation for graceful operation termination.
 func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
-    resultCh := make(chan P2PResult)
+	resultCh := make(chan P2PResult)
 
-    go func() {
-        defer close(resultCh)
+	go func() {
+		defer close(resultCh)
+		defer func() {
+			// Free connection resources
+			if err := c.host.Network().ClosePeer(pi.ID()); err != nil {
+				log.WithError(err).WithField("remoteID", pi.ID().ShortString()).Warnln("Could not close connection to peer")
+			}
+		}()
 
-        result := P2PResult{
-            RoutingTable: &core.RoutingTable[PeerInfo]{PeerID: pi.ID()},
-        }
-        
-        log.Infof(">>> [1/5] Starting crawl for %s", pi.ID().ShortString())
+		result := P2PResult{
+			RoutingTable: &core.RoutingTable[PeerInfo]{PeerID: pi.ID()},
+		}
 
-        // Use a defer function to ensure the connection is closed.
-        defer func() {
-            if err := c.host.Network().ClosePeer(pi.ID()); err != nil {
-                log.WithError(err).Warnf(">>> [x/5] Error closing peer %s", pi.ID().ShortString())
-            }
-        }()
+		// register the given peer (before connecting) to receive
+		// the identify result on the returned channel
+		identifyChan := c.host.RegisterIdentify(pi.ID())
 
-        // 1. Establish the raw connection
-        result.ConnectStartTime = time.Now()
-        _, err := c.connect(ctx, pi.AddrInfo)
-        if err != nil {
-            result.ConnectError = err
-            result.ConnectErrorStr = db.NetError(err)
-            result.ConnectEndTime = time.Now()
-            log.WithError(err).Errorf(">>> [2/5] FAILED to connect to %s", pi.ID().ShortString())
-            select {
-            case resultCh <- result:
-            case <-ctx.Done():
-            }
-            return
-        }
-        log.Infof(">>> [2/5] SUCCESS connecting to %s", pi.ID().ShortString())
+		var conn network.Conn
+		result.ConnectStartTime = time.Now()
+		conn, result.ConnectError = c.connect(ctx, pi.AddrInfo) // use filtered addr list
+		result.ConnectEndTime = time.Now()
 
+		// If we could successfully connect to the peer we actually crawl it.
+		if result.ConnectError == nil {
+			// keep track of the multi address over which we successfully connected
+			result.ConnectMaddr = conn.RemoteMultiaddr()
 
-        // 2. Open a new stream for the specific Algorand protocol
-        s, err := c.host.NewStream(ctx, pi.ID(), "/algorand-ws/2.2.0")
-        if err != nil {
-            result.ConnectError = fmt.Errorf("failed to open stream: %w", err)
-            result.ConnectErrorStr = db.NetError(result.ConnectError)
-            result.ConnectEndTime = time.Now()
-            log.WithError(err).Errorf(">>> [3/5] FAILED to open stream to %s", pi.ID().ShortString())
-            select {
-            case resultCh <- result:
-            case <-ctx.Done():
-            }
-            return
-        }
-        defer s.Close()
-        log.Infof(">>> [3/5] SUCCESS opening stream to %s", pi.ID().ShortString())
+			// keep track of the transport of the open connection
+			result.Transport = conn.ConnState().Transport
 
+			// Fetch all neighbors
+			result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
+			if result.CrawlError != nil {
+				result.CrawlErrorStr = db.NetError(result.CrawlError)
+			}
 
-        // 3. Perform the custom Algorand handshake
-        if err := c.performHandshake(s); err != nil {
-            result.CrawlError = fmt.Errorf("handshake failed: %w", err)
-            result.CrawlErrorStr = db.NetError(result.CrawlError)
-            result.ConnectEndTime = time.Now()
-            log.WithError(err).Errorf(">>> [4/5] FAILED handshake with %s", pi.ID().ShortString())
-            select {
-            case resultCh <- result:
-            case <-ctx.Done():
-            }
-            return
-        }
-        result.ConnectEndTime = time.Now() // Handshake successful!
-        log.Infof(">>> [4/5] SUCCESS handshake with %s", pi.ID().ShortString())
-        
-        
-        // 4. If the handshake succeeds, we consider the crawl successful for now.
-        //    (The bucket draining logic is omitted to isolate the handshake issue)
-        log.Infof(">>> [5/5] Crawl logic would proceed for %s", pi.ID().ShortString())
-        result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
-        if result.CrawlError != nil {
-            result.CrawlErrorStr = db.NetError(result.CrawlError)
-        }
+			// wait for the Identify exchange to complete (no-op if already done)
+			// the internal timeout is set to 30 s. When crawling we only allow 5s.
+			timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
 
-        // Send the final result
-        select {
-        case resultCh <- result:
-        case <-ctx.Done():
-        }
-    }()
+			select {
+			case <-timeoutCtx.Done():
+				// identification timed out.
+			case identify, more := <-identifyChan:
+				// identification may have succeeded.
+				if !more {
+					break
+				}
 
-    return resultCh
+				result.Agent = identify.AgentVersion
+				result.ListenMaddrs = identify.ListenAddrs
+				result.Protocols = make([]string, len(identify.Protocols))
+				for i := range identify.Protocols {
+					result.Protocols[i] = string(identify.Protocols[i])
+				}
+			}
+
+			if c.cfg.GossipSubPX {
+				// give the other peer a chance to open a stream to and prune us
+				streams := openInboundGossipSubStreams(c.host, pi.ID())
+
+				// The maximum time to wait for the gossipsub px to complete
+				maxGossipSubWait := c.cfg.DialTimeout
+
+				// the minimum time to wait for the gossipsub px to start
+				minGossipSubWait := 2 * time.Second
+
+				// the time since we're connected to the peer
+				elapsed := time.Since(result.ConnectEndTime)
+
+				// the remaining time until the maximum wait time is reached
+				remainingWait := maxGossipSubWait - elapsed
+
+				// the interval to check the open gossipsub streams
+				interval := 250 * time.Millisecond
+
+				// if 1) we are supposed to wait a little longer for the
+				// gossipsub exchange (remainingWait > 0) and 2) we either have
+				// at least one open gossipsubstream or haven't waited long enough
+				// for such a stream to be there yet then we will enter the for
+				// loop that waits the calculated remaining time before exiting
+				// or until we don't have any open gossipsub streams anymore by
+				// checking every 250ms if there are still any.
+
+				if remainingWait > 0 && (streams != 0 || elapsed < minGossipSubWait) {
+
+					// if we don't have an open stream yet and the check
+					// interval is way below the minimum wait time we increase
+					// the initial ticker delay
+					initialTickerDelay := interval
+					if streams == 0 && minGossipSubWait-elapsed > interval {
+						initialTickerDelay = minGossipSubWait - elapsed
+					}
+
+					timer := time.NewTimer(remainingWait)
+					ticker := time.NewTicker(initialTickerDelay)
+
+					defer timer.Stop()
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-ctx.Done():
+							// exit for loop because the context was cancelled
+						case <-timer.C:
+							// exit for loop because the maximum wait time was reached
+						case <-ticker.C:
+							ticker.Reset(interval)
+							if openInboundGossipSubStreams(c.host, pi.ID()) != 0 {
+								continue
+							}
+							// exit for loop because we don't have any open
+							// streams despite waiting minGossipSubWait
+						}
+						break
+					}
+				}
+			}
+		} else {
+			// if there was a connection error, parse it to a known one
+			result.ConnectErrorStr = db.NetError(result.ConnectError)
+		}
+
+		// deregister peer from identify messages
+		c.host.DeregisterIdentify(pi.ID())
+
+		// send the result back and close channel
+		select {
+		case resultCh <- result:
+		case <-ctx.Done():
+		}
+	}()
+
+	return resultCh
 }
 
 // connect establishes a connection to the given peer.
@@ -187,8 +223,6 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 	// keep track of retries for debug logging
 	retry := 0
 
-	log.Infof("Attempting to connect to %s with addresses: %v", pi.ID.ShortString(), pi.Addrs)
-
 	for {
 		logEntry := log.WithFields(log.Fields{
 			"timeout":  c.cfg.DialTimeout.String(),
@@ -202,7 +236,6 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 		c.host.Peerstore().AddAddrs(pi.ID, pi.Addrs, peerstore.TempAddrTTL)
 
 		timeoutCtx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
-		log.Infof("Dialing peer %s, attempt %d", pi.ID.ShortString(), retry)
 		conn, err := c.host.Network().DialPeer(timeoutCtx, pi.ID)
 		cancel()
 
@@ -349,31 +382,4 @@ func (c *Crawler) drainBucket(ctx context.Context, rt *kbucket.RoutingTable, pid
 	}
 
 	return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
-}
-
-func (c *Crawler) performHandshake(s network.Stream) error {
-	// Construct the metadata headers
-	headers := make(http.Header)
-	headers.Set("genesis-id", "testnet-v1.0")
-	headers.Set("genesis-hash", "SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=")
-
-	// Convert to peerMetaHeaders and marshal
-	meta := peerMetaHeadersFromHTTPHeaders(headers)
-	data, err := meta.MarshalMsg(nil)
-	if err != nil {
-		return fmt.Errorf("failed to marshal handshake metadata: %w", err)
-	}
-
-	// Prepare the message with the length prefix
-	msg := make([]byte, 2+len(data))
-	binary.BigEndian.PutUint16(msg, uint16(len(data)))
-	copy(msg[2:], data)
-
-	// Send the handshake message
-	_, err = s.Write(msg)
-	if err != nil {
-		return fmt.Errorf("failed to write handshake message: %w", err)
-	}
-
-	return nil
 }
