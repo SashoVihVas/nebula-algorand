@@ -416,9 +416,9 @@ var (
 	}
 
 	BootstrapPeersAlgoTestnet = []string{
-		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+		"/ip4/159.223.18.2/tcp/4162/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
 	}
-	
+
 	BootstrapPeersAlgoMainnet = []string{
 		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
 	}
