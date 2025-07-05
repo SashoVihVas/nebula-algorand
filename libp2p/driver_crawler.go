@@ -302,7 +302,14 @@ func (d *CrawlDriver) algorandStreamHandler(stream network.Stream) {
 			return
 		}
 	}
-log.WithField("pmi_version", pmi.version).WithField("pmi_features", pmi.features).Info("Algorand handshake successful")
+	log.WithField("pmi_version", pmi.version).WithField("pmi_features", pmi.features).Info("Algorand handshake successful")
+
+	// Store the active stream
+	d.activeStreams.Store(stream.Conn().RemotePeer(), stream)
+	log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("Stored active Algorand stream")
+
+	// Set a deadline to detect stream closure
+	stream.SetDeadline(time.Now().Add(20 * time.Second)) // Adjust timeout as needed
 }
 
 var _ core.PeerInfo[PeerInfo] = (*PeerInfo)(nil)
@@ -377,6 +384,7 @@ type CrawlDriver struct {
 	crawlerCount    int
 	writerCount     int
 	protocolVersion string
+	activeStreams   sync.Map
 }
 
 func (d *CrawlDriver) TelemetryGUID() string {
@@ -468,20 +476,24 @@ func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerIn
 	sort.Strings(hostsList)
 	hostID := peer.ID(hostsList[d.crawlerCount%len(d.hosts)])
 
-	allProtocols := []protocol.ID{
-		protocol.ID("/algorand-ws/2.2.0"),
-		protocol.ID("/algorand/kad/testnet-v1.0"),
-	}
+	var pm *pb.ProtocolMessenger
+	if d.cfg.Network != config.NetworkAlgoTestnet {
+		allProtocols := make([]protocol.ID, len(d.cfg.Protocols))
+		for i, p := range d.cfg.Protocols {
+			allProtocols[i] = protocol.ID(p)
+		}
 
-	ms := &msgSender{
-		h:         d.hosts[hostID].Host,
-		protocols: allProtocols, // Use the combined list here
-		timeout:   d.cfg.DialTimeout,
-	}
+		ms := &msgSender{
+			h:         d.hosts[hostID].Host,
+			protocols: allProtocols,
+			timeout:   d.cfg.DialTimeout,
+		}
 
-	pm, err := pb.NewProtocolMessenger(ms)
-	if err != nil {
-		return nil, fmt.Errorf("new protocol messenger: %w", err)
+		var err error
+		pm, err = pb.NewProtocolMessenger(ms)
+		if err != nil {
+			return nil, fmt.Errorf("new protocol messenger: %w", err)
+		}
 	}
 
 	c := &Crawler{
@@ -492,6 +504,7 @@ func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerIn
 		cfg:       d.cfg.CrawlerConfig(),
 		client:    kubo.NewClient(),
 		stateChan: d.workerStateChan,
+		driver:    d, // Pass the driver
 	}
 
 	d.crawlerCount += 1
