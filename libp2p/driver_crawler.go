@@ -468,9 +468,14 @@ func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerIn
 	sort.Strings(hostsList)
 	hostID := peer.ID(hostsList[d.crawlerCount%len(d.hosts)])
 
+	allProtocols := []protocol.ID{
+		protocol.ID("/algorand-ws/2.2.0"),
+		protocol.ID("/algorand/kad/testnet-v1.0"),
+	}
+
 	ms := &msgSender{
 		h:         d.hosts[hostID].Host,
-		protocols: protocol.ConvertFromStrings(d.cfg.Protocols),
+		protocols: allProtocols, // Use the combined list here
 		timeout:   d.cfg.DialTimeout,
 	}
 
