@@ -2,15 +2,13 @@ package libp2p
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/algorand/go-algorand/network/p2p"
 	"github.com/cenkalti/backoff/v4"
-	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -19,7 +17,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/dennis-tra/nebula-crawler/config"
 	"github.com/dennis-tra/nebula-crawler/core"
@@ -115,12 +112,13 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			if stream == nil {
-				result.CrawlError = fmt.Errorf("timed out waiting for stream to be ready")
-			} else {
-				// Fetch all neighbors
-				result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
+			if stream == nil && c.driver.cfg.Network == config.NetworkAlgoTestnet {
+				// For algorand we don't need a stream if we use the discovery service
+				log.Infoln("No active stream for algorand peer, proceeding with discovery service")
 			}
+
+			// Fetch all neighbors
+			result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
 
 			if result.CrawlError != nil {
 				result.CrawlErrorStr = db.NetError(result.CrawlError)
@@ -308,6 +306,37 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 }
 
 func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.RoutingTable[PeerInfo], error) {
+	if c.driver.cfg.Network == config.NetworkAlgoTestnet {
+		// Get the discovery object directly. It's already the correct type.
+		discovery, ok := c.driver.discoveries[c.host.ID()]
+		if !ok || discovery == nil {
+			return nil, fmt.Errorf("no discovery service found for host %s", c.host.ID())
+		}
+
+		// Call PeersForCapability directly.
+		numPeersToFind := 100 // A reasonable number of peers to request
+		peers, err := discovery.PeersForCapability(p2p.Gossip, numPeersToFind)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query for peers with gossip capability: %w", err)
+		}
+
+		log.Infof("Found %d peers via PeersForCapability", len(peers))
+
+		neighbors := make([]PeerInfo, len(peers))
+		for i, p := range peers {
+			neighbors[i] = PeerInfo{AddrInfo: p}
+		}
+
+		routingTable := &core.RoutingTable[PeerInfo]{
+			PeerID:    pi.ID,
+			Neighbors: neighbors,
+			Error:     err,
+		}
+
+		return routingTable, nil
+	}
+
+	// --- This part remains unchanged for other networks ---
 	rt, err := kbucket.NewRoutingTable(20, kbucket.ConvertPeerID(pi.ID), time.Hour, nil, time.Hour, nil)
 	if err != nil {
 		return nil, err
@@ -319,16 +348,12 @@ func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.Rou
 	errorBits := atomic.NewUint32(0)
 
 	errg := errgroup.Group{}
-	for i := uint(0); i <= 15; i++ { // 15 is maximum
-		count := i // Copy value
+	for i := uint(0); i <= 15; i++ {
+		count := i
 		errg.Go(func() error {
-			var neighbors []*peer.AddrInfo
+			var n []*peer.AddrInfo
 			var err error
-			if c.driver.cfg.Network == config.NetworkAlgoTestnet {
-				neighbors, err = c.drainBucketAlgorand(ctx, rt, pi.ID, count)
-			} else {
-				neighbors, err = c.drainBucketDefault(ctx, rt, pi.ID, count)
-			}
+			n, err = c.drainBucketDefault(ctx, rt, pi.ID, count)
 
 			if err != nil {
 				errorBits.Add(1 << count)
@@ -336,8 +361,8 @@ func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.Rou
 			}
 
 			allNeighborsLk.Lock()
-			for _, n := range neighbors {
-				allNeighbors[n.ID] = *n
+			for _, neighbor := range n {
+				allNeighbors[neighbor.ID] = *neighbor
 			}
 			allNeighborsLk.Unlock()
 
@@ -377,146 +402,4 @@ func (c *Crawler) drainBucketDefault(ctx context.Context, rt *kbucket.RoutingTab
 		// ... (error handling as in original file)
 	}
 	return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
-}
-
-func (c *Crawler) drainBucketAlgorand(ctx context.Context, rt *kbucket.RoutingTable, pid peer.ID, bucket uint) ([]*peer.AddrInfo, error) {
-	rpi, err := rt.GenRandPeerID(bucket)
-	if err != nil {
-		log.WithError(err).WithField("enr", pid.ShortString()).WithField("bucket", bucket).Warnln("Failed generating random peer ID")
-		return nil, fmt.Errorf("generating random peer ID with CPL %d: %w", bucket, err)
-	}
-
-	var lastErr error
-	for retry := 0; retry < 2; retry++ {
-		neighbors, err := c.getClosestPeersAlgorand(ctx, pid, rpi)
-		if err == nil {
-			// Success, even if neighbors is empty
-			return neighbors, nil
-		}
-		lastErr = err
-		// Basic retry, can be improved with more specific error handling
-		log.WithError(err).WithFields(log.Fields{
-			"peer":   pid.ShortString(),
-			"bucket": bucket,
-			"retry":  retry,
-		}).Warnln("Failed getting closest peers, retrying...")
-		time.Sleep(1 * time.Second)
-	}
-
-	return nil, fmt.Errorf("getting closest peer with CPL %d for Algorand: %w", bucket, lastErr)
-}
-
-const KademliaMessageTag = "kd"
-
-func (c *Crawler) getClosestPeersAlgorand(ctx context.Context, targetPeer peer.ID, key peer.ID) ([]*peer.AddrInfo, error) {
-	c.algorandQueryMutex.Lock()
-	defer c.algorandQueryMutex.Unlock()
-
-	val, ok := c.driver.activeStreams.Load(targetPeer)
-	if !ok {
-		return nil, fmt.Errorf("no active stream for peer %s", targetPeer)
-	}
-	stream := val.(network.Stream)
-
-	log.WithFields(log.Fields{
-		"targetPeer": targetPeer.ShortString(),
-		"key":        key.ShortString(),
-	}).Debugln("Sending FIND_NODE message to Algorand peer")
-
-	// 1. Construct the Kademlia FIND_NODE message.
-	msg := pb.NewMessage(pb.Message_FIND_NODE, []byte(key), 0)
-
-	// 2. Marshal the protobuf message.
-	payload, err := proto.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal FIND_NODE message: %w", err)
-	}
-
-	// 3. Prepend the Algorand message tag.
-	taggedPayload := append([]byte(KademliaMessageTag), payload...)
-
-	// 4. Create and write the 4-byte length prefix.
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(taggedPayload)))
-	if _, err := stream.Write(lenBuf); err != nil {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("writing length prefix: %w", err)
-	}
-
-	// 5. Write the tagged payload.
-	if _, err := stream.Write(taggedPayload); err != nil {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("writing tagged payload: %w", err)
-	}
-
-	// --- Reading the Response ---
-
-	// 1. Read the 4-byte length prefix.
-	respLenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(stream, respLenBuf); err != nil {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("reading response length prefix: %w", err)
-	}
-	respLen := binary.BigEndian.Uint32(respLenBuf)
-	if respLen > network.MessageSizeMax {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("response message too large: %d", respLen)
-	}
-
-	// 2. Read the full tagged response.
-	taggedRespPayload := make([]byte, respLen)
-	if _, err := io.ReadFull(stream, taggedRespPayload); err != nil {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("reading tagged response payload: %w", err)
-	}
-
-	// 3. Check the tag.
-	if len(taggedRespPayload) < 2 {
-		return nil, fmt.Errorf("response too short to contain a tag")
-	}
-	tag := string(taggedRespPayload[:2])
-	if tag != KademliaMessageTag {
-		return nil, fmt.Errorf("unexpected response tag: got '%s', want '%s'", tag, KademliaMessageTag)
-	}
-
-	// 4. Unmarshal the protobuf payload, *stripping the tag*.
-	respMsg := new(pb.Message)
-	if err := proto.Unmarshal(taggedRespPayload[2:], respMsg); err != nil {
-		c.driver.activeStreams.Delete(targetPeer)
-		return nil, fmt.Errorf("unmarshaling CLOSER_PEERS response: %w", err)
-	}
-
-	// --- Your existing logic ---
-	log.WithFields(log.Fields{
-		"targetPeer":   targetPeer.ShortString(),
-		"responseType": respMsg.GetType(),
-		"closerPeers":  len(respMsg.GetCloserPeers()),
-	}).Debugln("Received response from Algorand peer")
-
-	if respMsg.GetType() != pb.Message_FIND_NODE {
-		return nil, fmt.Errorf("unexpected response type: %s", respMsg.GetType())
-	}
-
-	var addrInfos []*peer.AddrInfo
-	for _, p := range respMsg.GetCloserPeers() {
-		pid, err := peer.IDFromBytes(p.Id)
-		if err != nil {
-			log.WithError(err).Warnln("Failed to decode peer ID from protobuf")
-			continue
-		}
-
-		maddrs := make([]ma.Multiaddr, len(p.Addrs))
-		for i, addrBytes := range p.Addrs {
-			maddr, err := ma.NewMultiaddrBytes(addrBytes)
-			if err != nil {
-				log.WithError(err).Warnln("Failed to parse multiaddr from protobuf")
-				continue
-			}
-			maddrs[i] = maddr
-		}
-
-		addrInfos = append(addrInfos, &peer.AddrInfo{ID: pid, Addrs: maddrs})
-	}
-
-	return addrInfos, nil
 }

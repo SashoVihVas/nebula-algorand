@@ -22,6 +22,9 @@ import (
 	"github.com/dennis-tra/nebula-crawler/utils"
 	"github.com/tinylib/msgp/msgp"
 
+	"github.com/algorand/go-algorand/network/p2p"
+	"github.com/algorand/go-algorand/protocol"
+	// puredht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p"
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
@@ -31,7 +34,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
+	core_protocol "github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/record"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
@@ -40,18 +43,21 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+
+	algorand_config "github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/logging"
 )
 
 // Handshake implementation based on go-algorand source code.
 const (
-	ProtocolVersionHeader       = "X-Algorand-Version"
-	ProtocolAcceptVersionHeader = "X-Algorand-Accept-Version"
-	TelemetryIDHeader           = "X-Algorand-TelId"
-	GenesisHeader               = "X-Algorand-Genesis"
-	NodeRandomHeader            = "X-Algorand-NodeRandom"
-	AddressHeader               = "X-Algorand-Location"
-	InstanceNameHeader          = "X-Algorand-InstanceName"
-	PeerFeaturesHeader          = "X-Algorand-Peer-Features"
+	ProtocolVersionHeader          = "X-Algorand-Version"
+	ProtocolAcceptVersionHeader    = "X-Algorand-Accept-Version"
+	TelemetryIDHeader              = "X-Algorand-TelId"
+	GenesisHeader                  = "X-Algorand-Genesis"
+	NodeRandomHeader               = "X-Algorand-NodeRandom"
+	AddressHeader                  = "X-Algorand-Location"
+	InstanceNameHeader             = "X-Algorand-InstanceName"
+	PeerFeaturesHeader             = "X-Algorand-Peer-Features"
 	PeerFeatureProposalCompression = "ppzstd"
 	PeerFeatureVoteVpackCompression = "avvpack"
 
@@ -374,10 +380,11 @@ func (cfg *CrawlDriverConfig) WriterConfig() *core.CrawlWriterConfig {
 }
 
 type CrawlDriver struct {
-	cfg   *CrawlDriverConfig
-	hosts map[peer.ID]*Host
-	dbc   db.Client
-
+	cfg             *CrawlDriverConfig
+	hosts           map[peer.ID]*Host
+//	dhts            map[peer.ID]*puredht.IpfsDHT
+	discoveries     map[peer.ID]*p2p.CapabilitiesDiscovery
+	dbc             db.Client
 	pxPeersChan     chan []PeerInfo
 	tasksChan       chan PeerInfo
 	workerStateChan chan string
@@ -431,13 +438,36 @@ func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error)
 
 	tasksChan := make(chan PeerInfo, len(cfg.BootstrapPeers))
 	for _, addrInfo := range cfg.BootstrapPeers {
-		addrInfo := addrInfo
 		tasksChan <- PeerInfo{AddrInfo: addrInfo}
+	}
+
+	// Initialize the map with the correct type
+	discoveries := make(map[peer.ID]*p2p.CapabilitiesDiscovery)
+
+	if cfg.Network == config.NetworkAlgoTestnet {
+		networkID := protocol.NetworkID("testnet-v1.0")
+		dhtCfg := algorand_config.GetDefaultLocal()
+		logger := logging.NewLogger() // A simple logger for initialization
+
+		// A simple bootstrap function that returns the initial peer list
+		bootstrapFunc := func() []peer.AddrInfo {
+			return cfg.BootstrapPeers
+		}
+
+		for _, h := range hosts {
+			// Use the correct constructor function
+			disc, err := p2p.MakeCapabilitiesDiscovery(context.Background(), dhtCfg, h, networkID, logger, bootstrapFunc)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create capabilities discovery for host %s: %w", h.ID(), err)
+			}
+			discoveries[h.ID()] = disc
+		}
 	}
 
 	d := &CrawlDriver{
 		cfg:             cfg,
 		hosts:           hosts,
+		discoveries:     discoveries,
 		dbc:             dbc,
 		tasksChan:       tasksChan,
 		pxPeersChan:     make(chan []PeerInfo),
@@ -458,7 +488,7 @@ func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error)
 
 		for _, h := range d.hosts {
 			for _, protID := range d.cfg.Protocols {
-				h.SetStreamHandler(protocol.ID(protID), d.handleGossipSubStream)
+				h.SetStreamHandler(core_protocol.ID(protID), d.handleGossipSubStream)
 			}
 		}
 	} else {
@@ -478,9 +508,9 @@ func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerIn
 
 	var pm *pb.ProtocolMessenger
 	if d.cfg.Network != config.NetworkAlgoTestnet {
-		allProtocols := make([]protocol.ID, len(d.cfg.Protocols))
+		allProtocols := make([]core_protocol.ID, len(d.cfg.Protocols))
 		for i, p := range d.cfg.Protocols {
-			allProtocols[i] = protocol.ID(p)
+			allProtocols[i] = core_protocol.ID(p)
 		}
 
 		ms := &msgSender{
