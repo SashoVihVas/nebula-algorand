@@ -235,3 +235,5 @@ replace (
 	// - exports closeable host
 	github.com/libp2p/go-libp2p => github.com/probe-lab/go-libp2p v0.38.2-0.20250414195430-e33a86ad9d10
 )
+
+replace github.com/algorand/go-algorand => /Users/aleksandarvasilev/MasterThesis/go-algorand
