@@ -416,10 +416,11 @@ var (
 	}
 
 	BootstrapPeersAlgoTestnet = []string{
-		"/ip4/159.223.18.2/tcp/4162/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+		"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
+		"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
 	}
 
 	BootstrapPeersAlgoMainnet = []string{
-		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+		"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
 	}
 )
