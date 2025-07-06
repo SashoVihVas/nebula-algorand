@@ -703,7 +703,7 @@ func ConfigureNetwork(network string) (*cli.StringSlice, *cli.StringSlice, error
 		protocols = cli.NewStringSlice("/algorand-ws/2.2.0", "/algorand/kad/testnet-v1.0")
 	case NetworkAlgoMainnet:
 		bootstrapPeers = cli.NewStringSlice(BootstrapPeersAlgoMainnet...)
-		protocols = cli.NewStringSlice("/algorand/kad/mainnet-v1.0")
+		protocols = cli.NewStringSlice("/algorand-ws/2.2.0")
 	default:
 		return nil, nil, fmt.Errorf("unknown network identifier: %s", network)
 	}

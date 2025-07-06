@@ -112,7 +112,7 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			if stream == nil && c.driver.cfg.Network == config.NetworkAlgoTestnet {
+			if stream == nil && c.driver.cfg.Network == config.NetworkAlgoMainnet {
 				// For algorand we don't need a stream if we use the discovery service
 				log.Infoln("No active stream for algorand peer, proceeding with discovery service")
 			}
@@ -306,7 +306,7 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 }
 
 func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.RoutingTable[PeerInfo], error) {
-	if c.driver.cfg.Network == config.NetworkAlgoTestnet {
+	if c.driver.cfg.Network == config.NetworkAlgoMainnet {
 		// Get the discovery object directly. It's already the correct type.
 		discovery, ok := c.driver.discoveries[c.host.ID()]
 		if !ok || discovery == nil {

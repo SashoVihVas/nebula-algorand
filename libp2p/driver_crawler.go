@@ -401,7 +401,7 @@ func (d *CrawlDriver) InstanceName() string {
 }
 
 func (d *CrawlDriver) GenesisID() string {
-	return "testnet-v1.0"
+	return "mainnet-v1.0"
 }
 
 func (d *CrawlDriver) PublicAddress() string {
@@ -439,8 +439,8 @@ func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error)
     // Initialize the map for discoveries. Even with a single host, the key is the peer ID.
     discoveries := make(map[peer.ID]*p2p.CapabilitiesDiscovery)
 
-    if cfg.Network == config.NetworkAlgoTestnet {
-        networkID := protocol.NetworkID("testnet-v1.0")
+    if cfg.Network == config.NetworkAlgoMainnet {
+        networkID := protocol.NetworkID("mainnet-v1.0")
         dhtCfg := algorand_config.GetDefaultLocal()
         logger := logging.NewLogger() // A simple logger for initialization
 
@@ -470,7 +470,7 @@ func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error)
         protocolVersion: "2.2",
     }
 
-    if cfg.Network == config.NetworkAlgoTestnet {
+    if cfg.Network == config.NetworkAlgoMainnet {
         // Set the stream handler on the single host
         host.SetStreamHandler("/algorand-ws/2.2.0", d.algorandStreamHandler)
     }
@@ -491,7 +491,7 @@ func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error)
 
 func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerInfo]], error) {
     var pm *pb.ProtocolMessenger
-    if d.cfg.Network != config.NetworkAlgoTestnet {
+    if d.cfg.Network != config.NetworkAlgoMainnet {
         allProtocols := make([]core_protocol.ID, len(d.cfg.Protocols))
         for i, p := range d.cfg.Protocols {
             allProtocols[i] = core_protocol.ID(p)
