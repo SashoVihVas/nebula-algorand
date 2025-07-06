@@ -416,11 +416,18 @@ var (
 	}
 
 	BootstrapPeersAlgoTestnet = []string{
-		"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
+		//"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
 		"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
+		// "/ip4/77.72.20.2/tcp/4191/p2p/12D3KooWGHvrZdbXHBtD2Za2RGBCEKRFVGk3FndZHnpfCMiZKHLy",
+		// "/ip4/135.125.67.98/tcp/4191/p2p/12D3KooWKAqmg4AP7FGBdyngowPGBQmSJS4yCM5YesvfQv9Ri6YE", 
+		// "/ip4/45.139.226.67/tcp/4191/p2p/12D3KooWSnzbvNWbT98KDq4M8hQNtCLhVy6xLmMVT84arqL8h6mn",
+		// "/ip4/74.118.136.141/tcp/4191/p2p/12D3KooWCXqtosEUozhLeEtfwZz69hofwSeSLk6fMNVWRkAYpgba",
+		// "/ip4/141.98.219.167/tcp/4191/p2p/12D3KooWJq6CDqXgbjCU4xGMpmr9tk4U5Dy1CTub8JGA4T3GeBAJ",
+		// "/ip4/209.58.138.232/tcp/4191/p2p/12D3KooWDw6HwautkzN85YkMnEPw7XdFPR2RNdaLq1qXVuashoqr",
+		// "/ip4/66.23.203.114/tcp/4191/p2p/12D3KooWAfqMg7W7DkPt7oBhS5woVCDKATtzaLtW2WZC3d1Rn2VA",
 	}
 
 	BootstrapPeersAlgoMainnet = []string{
-		"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
+		"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
 	}
 )
