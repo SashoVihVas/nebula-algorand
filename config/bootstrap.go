@@ -428,6 +428,12 @@ var (
 	}
 
 	BootstrapPeersAlgoMainnet = []string{
-		"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
+		//"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
+		"/ip4/38.22.17.249/tcp/4190/p2p/12D3KooWPtoCdKuuChZCUPUUEkwy6eLbpVdhhCpRvMtWj4GfAwre", 
+		"/ip4/46.242.131.171/tcp/4190/p2p/12D3KooWCMWjHGwi8azNw4RcH2FaRZ5oRNF9WL4SQhLBeScy6mii", 
+		"/ip4/193.228.196.163/tcp/4190/p2p/12D3KooWSH9L2dT6GYUg2HKXDzNiY3tjH75ibU4yJsWVWGaQRZ2x", 
+		"/ip4/172.111.38.77/tcp/4190/p2p/12D3KooWLm9KfdDC9VNmfBdLpTozHbBYhKyoyBL6a9efi4pRW1Cf", 
+		"/ip4/45.250.25.146/tcp/4190/p2p/12D3KooWMCaUSV4NQzGCADeLVwBsSMQMBBLdVjxCevN5ihbFXSeq", 
+		"/ip4/172.96.172.36/tcp/4190/p2p/12D3KooWSdurxomMn38Fk6aqXY1FgWmMnththYxUXX8BNz8N5Kyk",	
 	}
 )
