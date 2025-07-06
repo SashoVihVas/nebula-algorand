@@ -102,21 +102,6 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 			// keep track of the transport of the open connection
 			result.Transport = conn.ConnState().Transport
 
-			// Wait for the stream to be ready
-			var stream network.Stream
-			for i := 0; i < 10; i++ { // Poll for up to 5 seconds
-				if val, ok := c.driver.activeStreams.Load(pi.ID()); ok {
-					stream = val.(network.Stream)
-					break
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-
-			if stream == nil && c.driver.cfg.Network == config.NetworkAlgoTestnet {
-				// For algorand we don't need a stream if we use the discovery service
-				log.Infoln("No active stream for algorand peer, proceeding with discovery service")
-			}
-
 			// Fetch all neighbors
 			result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
 
@@ -146,67 +131,6 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 				}
 			}
 
-			if c.cfg.GossipSubPX {
-				// give the other peer a chance to open a stream to and prune us
-				streams := openInboundGossipSubStreams(c.host, pi.ID())
-
-				// The maximum time to wait for the gossipsub px to complete
-				maxGossipSubWait := c.cfg.DialTimeout
-
-				// the minimum time to wait for the gossipsub px to start
-				minGossipSubWait := 2 * time.Second
-
-				// the time since we're connected to the peer
-				elapsed := time.Since(result.ConnectEndTime)
-
-				// the remaining time until the maximum wait time is reached
-				remainingWait := maxGossipSubWait - elapsed
-
-				// the interval to check the open gossipsub streams
-				interval := 250 * time.Millisecond
-
-				// if 1) we are supposed to wait a little longer for the
-				// gossipsub exchange (remainingWait > 0) and 2) we either have
-				// at least one open gossipsubstream or haven't waited long enough
-				// for such a stream to be there yet then we will enter the for
-				// loop that waits the calculated remaining time before exiting
-				// or until we don't have any open gossipsub streams anymore by
-				// checking every 250ms if there are still any.
-
-				if remainingWait > 0 && (streams != 0 || elapsed < minGossipSubWait) {
-
-					// if we don't have an open stream yet and the check
-					// interval is way below the minimum wait time we increase
-					// the initial ticker delay
-					initialTickerDelay := interval
-					if streams == 0 && minGossipSubWait-elapsed > interval {
-						initialTickerDelay = minGossipSubWait - elapsed
-					}
-
-					timer := time.NewTimer(remainingWait)
-					ticker := time.NewTicker(initialTickerDelay)
-
-					defer timer.Stop()
-					defer ticker.Stop()
-
-					for {
-						select {
-						case <-ctx.Done():
-							// exit for loop because the context was cancelled
-						case <-timer.C:
-							// exit for loop because the maximum wait time was reached
-						case <-ticker.C:
-							ticker.Reset(interval)
-							if openInboundGossipSubStreams(c.host, pi.ID()) != 0 {
-								continue
-							}
-							// exit for loop because we don't have any open
-							// streams despite waiting minGossipSubWait
-						}
-						break
-					}
-				}
-			}
 		} else {
 			// if there was a connection error, parse it to a known one
 			result.ConnectErrorStr = db.NetError(result.ConnectError)
@@ -301,26 +225,28 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 			retry += 1
 			continue
 		}
-
 	}
 }
 
+// drainBuckets queries the DHT for peers. If the network is the Algorand testnet,
+// it uses the CapabilitiesDiscovery service to find peers with the "gossip" capability.
+// For other networks, it falls back to the default behavior of draining the Kademlia buckets.
 func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.RoutingTable[PeerInfo], error) {
 	if c.driver.cfg.Network == config.NetworkAlgoTestnet {
-		// Get the discovery object directly. It's already the correct type.
+		// Get the discovery object for the current host.
 		discovery, ok := c.driver.discoveries[c.host.ID()]
 		if !ok || discovery == nil {
 			return nil, fmt.Errorf("no discovery service found for host %s", c.host.ID())
 		}
 
-		// Call PeersForCapability directly.
-		numPeersToFind := 100 // A reasonable number of peers to request
+		// Find peers with the "gossip" capability.
+		numPeersToFind := 100 // A reasonable number of peers to request at once.
 		peers, err := discovery.PeersForCapability(p2p.Gossip, numPeersToFind)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query for peers with gossip capability: %w", err)
 		}
 
-		log.Infof("Found %d peers via PeersForCapability", len(peers))
+		log.Infof("Found %d peers with gossip capability", len(peers))
 
 		neighbors := make([]PeerInfo, len(peers))
 		for i, p := range peers {
