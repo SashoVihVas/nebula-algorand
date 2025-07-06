@@ -417,8 +417,8 @@ var (
 
 	BootstrapPeersAlgoTestnet = []string{
 		//"/ip4/138.197.188.71/tcp/4161/p2p/12D3KooWKvpPyK5BUgpqcb5ZPPFB8QVycKBWLW2RdyFGxhYPWnWC",
-		//"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
-		"/ip4/77.72.20.2/tcp/4191/p2p/12D3KooWGHvrZdbXHBtD2Za2RGBCEKRFVGk3FndZHnpfCMiZKHLy",
+		"/ip4/167.99.130.48/tcp/4161/p2p/12D3KooWC9YghdWR3GrYcX6xytnmLhUSXTRh6jTVfditG8sj9Lpx",
+		// "/ip4/77.72.20.2/tcp/4191/p2p/12D3KooWGHvrZdbXHBtD2Za2RGBCEKRFVGk3FndZHnpfCMiZKHLy",
 		// "/ip4/135.125.67.98/tcp/4191/p2p/12D3KooWKAqmg4AP7FGBdyngowPGBQmSJS4yCM5YesvfQv9Ri6YE", 
 		// "/ip4/45.139.226.67/tcp/4191/p2p/12D3KooWSnzbvNWbT98KDq4M8hQNtCLhVy6xLmMVT84arqL8h6mn",
 		// "/ip4/74.118.136.141/tcp/4191/p2p/12D3KooWCXqtosEUozhLeEtfwZz69hofwSeSLk6fMNVWRkAYpgba",
