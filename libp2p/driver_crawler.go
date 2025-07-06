@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/textproto"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -381,8 +380,7 @@ func (cfg *CrawlDriverConfig) WriterConfig() *core.CrawlWriterConfig {
 
 type CrawlDriver struct {
 	cfg             *CrawlDriverConfig
-	hosts           map[peer.ID]*Host
-//	dhts            map[peer.ID]*puredht.IpfsDHT
+	host            *Host
 	discoveries     map[peer.ID]*p2p.CapabilitiesDiscovery
 	dbc             db.Client
 	pxPeersChan     chan []PeerInfo
@@ -422,124 +420,110 @@ func (d *CrawlDriver) SupportedProtoVersions() []string {
 var _ core.Driver[PeerInfo, core.CrawlResult[PeerInfo]] = (*CrawlDriver)(nil)
 
 func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error) {
-	userAgent := "nebula/" + cfg.Version
-	if cfg.Network == config.NetworkAvailTuringLC || cfg.Network == config.NetworkAvailMainnetLC {
-		userAgent = "avail-light-client/light-client/1.12.13/rust-client"
-	}
+    userAgent := "nebula/" + cfg.Version
+    if cfg.Network == config.NetworkAvailTuringLC || cfg.Network == config.NetworkAvailMainnetLC {
+        userAgent = "avail-light-client/light-client/1.12.13/rust-client"
+    }
 
-	hosts := make(map[peer.ID]*Host, runtime.NumCPU())
-	for i := 0; i < runtime.NumCPU(); i++ {
-		h, err := newLibp2pHost(userAgent)
-		if err != nil {
-			return nil, fmt.Errorf("new libp2p host: %w", err)
-		}
-		hosts[h.ID()] = h
-	}
+    // Create a single shared host
+    host, err := newLibp2pHost(userAgent)
+    if err != nil {
+        return nil, fmt.Errorf("new libp2p host: %w", err)
+    }
 
-	tasksChan := make(chan PeerInfo, len(cfg.BootstrapPeers))
-	for _, addrInfo := range cfg.BootstrapPeers {
-		tasksChan <- PeerInfo{AddrInfo: addrInfo}
-	}
+    tasksChan := make(chan PeerInfo, len(cfg.BootstrapPeers))
+    for _, addrInfo := range cfg.BootstrapPeers {
+        tasksChan <- PeerInfo{AddrInfo: addrInfo}
+    }
 
-	// Initialize the map with the correct type
-	discoveries := make(map[peer.ID]*p2p.CapabilitiesDiscovery)
+    // Initialize the map for discoveries. Even with a single host, the key is the peer ID.
+    discoveries := make(map[peer.ID]*p2p.CapabilitiesDiscovery)
 
-	if cfg.Network == config.NetworkAlgoTestnet {
-		networkID := protocol.NetworkID("testnet-v1.0")
-		dhtCfg := algorand_config.GetDefaultLocal()
-		logger := logging.NewLogger() // A simple logger for initialization
+    if cfg.Network == config.NetworkAlgoTestnet {
+        networkID := protocol.NetworkID("testnet-v1.0")
+        dhtCfg := algorand_config.GetDefaultLocal()
+        logger := logging.NewLogger() // A simple logger for initialization
 
-		// A simple bootstrap function that returns the initial peer list
-		bootstrapFunc := func() []peer.AddrInfo {
-			return cfg.BootstrapPeers
-		}
+        // A simple bootstrap function that returns the initial peer list
+        bootstrapFunc := func() []peer.AddrInfo {
+            return cfg.BootstrapPeers
+        }
 
-		for _, h := range hosts {
-			// Use the correct constructor function
-			disc, err := p2p.MakeCapabilitiesDiscovery(context.Background(), dhtCfg, h, networkID, logger, bootstrapFunc)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create capabilities discovery for host %s: %w", h.ID(), err)
-			}
-			discoveries[h.ID()] = disc
-		}
-	}
+        // Use the single host to create the capabilities discovery service
+        disc, err := p2p.MakeCapabilitiesDiscovery(context.Background(), dhtCfg, host, networkID, logger, bootstrapFunc)
+        if err != nil {
+            return nil, fmt.Errorf("failed to create capabilities discovery for host %s: %w", host.ID(), err)
+        }
+        discoveries[host.ID()] = disc
+    }
 
-	d := &CrawlDriver{
-		cfg:             cfg,
-		hosts:           hosts,
-		discoveries:     discoveries,
-		dbc:             dbc,
-		tasksChan:       tasksChan,
-		pxPeersChan:     make(chan []PeerInfo),
-		workerStateChan: make(chan string, cfg.WorkerCount),
-		crawlerCount:    0,
-		writerCount:     0,
-		protocolVersion: "2.2",
-	}
+    d := &CrawlDriver{
+        cfg:             cfg,
+        host:            host, // Assign the single host instance
+        discoveries:     discoveries,
+        dbc:             dbc,
+        tasksChan:       tasksChan,
+        pxPeersChan:     make(chan []PeerInfo),
+        workerStateChan: make(chan string, cfg.WorkerCount),
+        crawlerCount:    0,
+        writerCount:     0,
+        protocolVersion: "2.2",
+    }
 
-	if cfg.Network == config.NetworkAlgoTestnet {
-		for _, h := range hosts {
-			h.SetStreamHandler("/algorand-ws/2.2.0", d.algorandStreamHandler)
-		}
-	}
+    if cfg.Network == config.NetworkAlgoTestnet {
+        // Set the stream handler on the single host
+        host.SetStreamHandler("/algorand-ws/2.2.0", d.algorandStreamHandler)
+    }
 
-	if cfg.GossipSubPX {
-		go d.monitorGossipSubPX()
+    if cfg.GossipSubPX {
+        go d.monitorGossipSubPX()
 
-		for _, h := range d.hosts {
-			for _, protID := range d.cfg.Protocols {
-				h.SetStreamHandler(core_protocol.ID(protID), d.handleGossipSubStream)
-			}
-		}
-	} else {
-		close(tasksChan)
-	}
+        // Set the stream handler for all protocols on the single host
+        for _, protID := range d.cfg.Protocols {
+            host.SetStreamHandler(core_protocol.ID(protID), d.handleGossipSubStream)
+        }
+    } else {
+        close(tasksChan)
+    }
 
-	return d, nil
+    return d, nil
 }
 
 func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerInfo]], error) {
-	hostsList := make([]string, 0, len(d.hosts))
-	for _, h := range d.hosts {
-		hostsList = append(hostsList, string(h.ID()))
-	}
-	sort.Strings(hostsList)
-	hostID := peer.ID(hostsList[d.crawlerCount%len(d.hosts)])
+    var pm *pb.ProtocolMessenger
+    if d.cfg.Network != config.NetworkAlgoTestnet {
+        allProtocols := make([]core_protocol.ID, len(d.cfg.Protocols))
+        for i, p := range d.cfg.Protocols {
+            allProtocols[i] = core_protocol.ID(p)
+        }
 
-	var pm *pb.ProtocolMessenger
-	if d.cfg.Network != config.NetworkAlgoTestnet {
-		allProtocols := make([]core_protocol.ID, len(d.cfg.Protocols))
-		for i, p := range d.cfg.Protocols {
-			allProtocols[i] = core_protocol.ID(p)
-		}
+        ms := &msgSender{
+            h:         d.host.Host, // Use the single host instance
+            protocols: allProtocols,
+            timeout:   d.cfg.DialTimeout,
+        }
 
-		ms := &msgSender{
-			h:         d.hosts[hostID].Host,
-			protocols: allProtocols,
-			timeout:   d.cfg.DialTimeout,
-		}
+        var err error
+        pm, err = pb.NewProtocolMessenger(ms)
+        if err != nil {
+            return nil, fmt.Errorf("new protocol messenger: %w", err)
+        }
+    }
 
-		var err error
-		pm, err = pb.NewProtocolMessenger(ms)
-		if err != nil {
-			return nil, fmt.Errorf("new protocol messenger: %w", err)
-		}
-	}
+    c := &Crawler{
+        id:        fmt.Sprintf("crawler-%02d", d.crawlerCount),
+        host:      d.host, // Use the single host instance
+        pm:        pm,
+        psTopics:  make(map[string]struct{}),
+        cfg:       d.cfg.CrawlerConfig(),
+        client:    kubo.NewClient(),
+        stateChan: d.workerStateChan,
+        driver:    d, // Pass the driver
+    }
 
-	c := &Crawler{
-		id:        fmt.Sprintf("crawler-%02d", d.crawlerCount),
-		host:      d.hosts[hostID],
-		pm:        pm,
-		psTopics:  make(map[string]struct{}),
-		cfg:       d.cfg.CrawlerConfig(),
-		client:    kubo.NewClient(),
-		stateChan: d.workerStateChan,
-		driver:    d, // Pass the driver
-	}
+    d.crawlerCount += 1
 
-	d.crawlerCount += 1
-
-	return c, nil
+    return c, nil
 }
 
 func (d *CrawlDriver) NewWriter() (core.Worker[core.CrawlResult[PeerInfo], core.WriteResult], error) {
@@ -568,22 +552,21 @@ func (d *CrawlDriver) Close() {
 
 func (d *CrawlDriver) shutdown() {
 	var wgHostClose sync.WaitGroup
-	for _, h := range d.hosts {
-		wgHostClose.Add(1)
-		go func(h *Host) {
-			defer wgHostClose.Done()
-			if err := h.Close(); err != nil {
-				log.WithError(err).Warnln("failed to close host")
-			}
-		}(h)
-	}
+	wgHostClose.Add(1)
+	go func(h *Host) {
+		defer wgHostClose.Done()
+		if err := h.Close(); err != nil {
+			log.WithError(err).Warnln("failed to close host")
+		}
+	}(d.host) // Pass the single host instance
 
 	var wgTasksClose sync.WaitGroup
 	wgTasksClose.Add(1)
 	go func() {
+		defer wgTasksClose.Done()
 		for range d.tasksChan {
+			// Draining the channel
 		}
-		wgTasksClose.Done()
 	}()
 
 	wgHostClose.Wait()
@@ -658,14 +641,13 @@ func (d *CrawlDriver) handleGossipSubStream(incomingStream network.Stream) {
 	}()
 
 	remoteID := incomingStream.Conn().RemotePeer()
-	localID := incomingStream.Conn().LocalPeer()
 
 	helloRPC, err := readRPC(incomingStream)
 	if err != nil {
 		return
 	}
 
-	outgoingStream, err := d.hosts[localID].NewStream(context.Background(), remoteID, pubsub.GossipSubDefaultProtocols...)
+	outgoingStream, err := d.host.NewStream(context.Background(), remoteID, pubsub.GossipSubDefaultProtocols...)
 	if err != nil {
 		return
 	}
