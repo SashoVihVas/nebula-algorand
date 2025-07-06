@@ -275,18 +275,6 @@ type PeerInfo struct {
 }
 
 func (d *CrawlDriver) algorandStreamHandler(stream network.Stream) {
-	remotePeerID := stream.Conn().RemotePeer()
-
-    // Atomically check if a handler for this peer is already active.
-    // If the key is already present, 'loaded' will be true.
-    _, loaded := d.handlingPeer.LoadOrStore(remotePeerID, true)
-
-    // If 'loaded' is true, it means a handler is already running.
-    // Kill this new redundant stream and exit immediately.
-    if loaded {
-        return // <-- The method does not proceed.
-    }
-
 	log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("New Algorand stream")
 
 	var err error
@@ -404,7 +392,6 @@ type CrawlDriver struct {
 	writerCount     int
 	protocolVersion string
 	activeStreams   sync.Map
-	handlingPeer    sync.Map // To track active handlers for peers
 }
 
 func (d *CrawlDriver) TelemetryGUID() string {

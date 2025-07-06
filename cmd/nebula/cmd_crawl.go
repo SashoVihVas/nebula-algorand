@@ -357,7 +357,7 @@ func CrawlAction(c *cli.Context) error {
 		// configure the crawl driver
 		driverCfg := &libp2p.CrawlDriverConfig{
 			Version:        cfg.Root.Version(),
-			WorkerCount:    1,
+			WorkerCount:    cfg.CrawlWorkerCount,
 			Network:        config.Network(cfg.Network),
 			Protocols:      cfg.Protocols.Value(),
 			DialTimeout:    cfg.Root.DialTimeout,
