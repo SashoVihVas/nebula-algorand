@@ -420,6 +420,6 @@ var (
 	}
 
 	BootstrapPeersAlgoMainnet = []string{
-		"/ip4/134.199.188.132/tcp/4161/p2p/12D3KooWBk3s6Uijsnnxrsh5PMWvPPj2Ub6fE2n9tM4KqJUY5Qa9",
+		"/ip4/64.227.112.163/tcp/4161/p2p/12D3KooWAUFhQq394HsYTw18bqG3dwsfrGScZceCK7QsieakVMst",
 	}
 )
