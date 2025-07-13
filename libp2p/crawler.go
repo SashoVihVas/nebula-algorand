@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/benbjohnson/clock"
@@ -51,8 +50,6 @@ type Crawler struct {
 	crawledPeers int
 	client       *kubo.Client
 	stateChan    chan string
-	driver       *CrawlDriver // Add driver reference
-	algorandQueryMutex sync.Mutex
 }
 
 var _ core.Worker[PeerInfo, core.CrawlResult[PeerInfo]] = (*Crawler)(nil)
