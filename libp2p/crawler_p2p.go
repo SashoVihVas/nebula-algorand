@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/algorand/go-algorand/network/p2p"
 	"github.com/cenkalti/backoff/v4"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -18,7 +17,6 @@ import (
 	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/dennis-tra/nebula-crawler/config"
 	"github.com/dennis-tra/nebula-crawler/core"
 	"github.com/dennis-tra/nebula-crawler/db"
 	pgmodels "github.com/dennis-tra/nebula-crawler/db/models/pg"
@@ -102,24 +100,8 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 			// keep track of the transport of the open connection
 			result.Transport = conn.ConnState().Transport
 
-			// Wait for the stream to be ready
-			var stream network.Stream
-			for i := 0; i < 10; i++ { // Poll for up to 5 seconds
-				if val, ok := c.driver.activeStreams.Load(pi.ID()); ok {
-					stream = val.(network.Stream)
-					break
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-
-			if stream == nil && c.driver.cfg.Network == config.NetworkAlgoTestnet {
-				// For algorand we don't need a stream if we use the discovery service
-				log.Infoln("No active stream for algorand peer, proceeding with discovery service")
-			}
-
 			// Fetch all neighbors
 			result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
-
 			if result.CrawlError != nil {
 				result.CrawlErrorStr = db.NetError(result.CrawlError)
 			}
@@ -305,38 +287,9 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, 
 	}
 }
 
+// drainBuckets sends RPC messages to the given peer and asks for its closest peers to an artificial set
+// of 15 random peer IDs with increasing common prefix lengths (CPL).
 func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.RoutingTable[PeerInfo], error) {
-	if c.driver.cfg.Network == config.NetworkAlgoTestnet {
-		// Get the discovery object directly. It's already the correct type.
-		discovery, ok := c.driver.discoveries[c.host.ID()]
-		if !ok || discovery == nil {
-			return nil, fmt.Errorf("no discovery service found for host %s", c.host.ID())
-		}
-
-		// Call PeersForCapability directly.
-		numPeersToFind := 100 // A reasonable number of peers to request
-		peers, err := discovery.PeersForCapability(p2p.Gossip, numPeersToFind)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query for peers with gossip capability: %w", err)
-		}
-
-		log.Infof("Found %d peers via PeersForCapability", len(peers))
-
-		neighbors := make([]PeerInfo, len(peers))
-		for i, p := range peers {
-			neighbors[i] = PeerInfo{AddrInfo: p}
-		}
-
-		routingTable := &core.RoutingTable[PeerInfo]{
-			PeerID:    pi.ID,
-			Neighbors: neighbors,
-			Error:     err,
-		}
-
-		return routingTable, nil
-	}
-
-	// --- This part remains unchanged for other networks ---
 	rt, err := kbucket.NewRoutingTable(20, kbucket.ConvertPeerID(pi.ID), time.Hour, nil, time.Hour, nil)
 	if err != nil {
 		return nil, err
@@ -345,24 +298,25 @@ func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.Rou
 	allNeighborsLk := sync.RWMutex{}
 	allNeighbors := map[peer.ID]peer.AddrInfo{}
 
+	// errorBits tracks at which CPL errors have occurred.
+	// 0000 0000 0000 0000 - No error
+	// 0000 0000 0000 0001 - An error has occurred at CPL 0
+	// 1000 0000 0000 0001 - An error has occurred at CPL 0 and 15
 	errorBits := atomic.NewUint32(0)
 
 	errg := errgroup.Group{}
-	for i := uint(0); i <= 15; i++ {
-		count := i
+	for i := uint(0); i <= 15; i++ { // 15 is maximum
+		count := i // Copy value
 		errg.Go(func() error {
-			var n []*peer.AddrInfo
-			var err error
-			n, err = c.drainBucketDefault(ctx, rt, pi.ID, count)
-
+			neighbors, err := c.drainBucket(ctx, rt, pi.ID, count)
 			if err != nil {
 				errorBits.Add(1 << count)
 				return err
 			}
 
 			allNeighborsLk.Lock()
-			for _, neighbor := range n {
-				allNeighbors[neighbor.ID] = *neighbor
+			for _, n := range neighbors {
+				allNeighbors[n.ID] = *n
 			}
 			allNeighborsLk.Unlock()
 
@@ -385,7 +339,8 @@ func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.Rou
 	return routingTable, err
 }
 
-func (c *Crawler) drainBucketDefault(ctx context.Context, rt *kbucket.RoutingTable, pid peer.ID, bucket uint) ([]*peer.AddrInfo, error) {
+func (c *Crawler) drainBucket(ctx context.Context, rt *kbucket.RoutingTable, pid peer.ID, bucket uint) ([]*peer.AddrInfo, error) {
+	// Generate a peer with the given common prefix length
 	rpi, err := rt.GenRandPeerID(bucket)
 	if err != nil {
 		log.WithError(err).WithField("enr", pid.ShortString()).WithField("bucket", bucket).Warnln("Failed generating random peer ID")
@@ -399,7 +354,32 @@ func (c *Crawler) drainBucketDefault(ctx context.Context, rt *kbucket.RoutingTab
 			// getting closest peers was successful!
 			return neighbors, nil
 		}
-		// ... (error handling as in original file)
+
+		var sleepDur time.Duration
+		switch true {
+		case strings.HasSuffix(err.Error(), network.ErrResourceLimitExceeded.Error()):
+			// the remote has responded with a resource limit exceeded error. Try again soon!
+			sleepDur = time.Second * time.Duration(3*(retry+1))
+		case strings.Contains(err.Error(), "connection failed"):
+			// This error happens in: https://github.com/libp2p/go-libp2p/blob/851f49d5edc46a24131a11f06df648602cd5968c/p2p/host/basic/basic_host.go#L648
+			// we were connected to the remote but couldn't open a stream because
+			// we lost the connection. Try again immediately! GetClosestPeers
+			// internally calls NewStream on the basichost.Host which attempts
+			// to connect to the peer again.
+			sleepDur = 0
+		default:
+			// this is an unhandled error and we won't try again.
+			return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
+		}
+
+		// the other node has indicated that it's out of resources. Wait a bit and try again.
+		select {
+		case <-time.After(sleepDur): // may add jitter here
+			continue
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
+
 	return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
 }
