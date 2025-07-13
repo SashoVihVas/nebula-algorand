@@ -48,30 +48,13 @@ require (
 )
 
 require (
-	github.com/algorand/falcon v0.1.0 // indirect
-	github.com/algorand/go-codec/codec v1.1.10 // indirect
-	github.com/algorand/go-deadlock v0.2.4 // indirect
-	github.com/algorand/go-sumhash v0.1.0 // indirect
-	github.com/algorand/msgp v1.1.60 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/google/go-cmp v0.6.0 // indirect
-	github.com/josharian/intern v1.0.0 // indirect
-	github.com/josharian/native v1.1.0 // indirect
-	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
-	github.com/mailru/easyjson v0.7.7 // indirect
-	github.com/mdlayher/netlink v1.7.2 // indirect
-	github.com/mdlayher/socket v0.4.1 // indirect
-	github.com/olivere/elastic v6.2.14+incompatible // indirect
-	github.com/petermattis/goid v0.0.0-20241025130422-66cb2e6d7274 // indirect
-	github.com/philhofer/fwd v1.1.3-0.20240916144458-20a13a1f6b7c // indirect
-	gopkg.in/sohlich/elogrus.v3 v3.0.0-20180410122755-1fa29e2f2009 // indirect
+	golang.org/x/time v0.8.0 // indirect
 )
 
 require (
 	github.com/ClickHouse/ch-go v0.64.1 // indirect
-	github.com/algorand/go-algorand v0.0.0-20250626191507-9adaf5573757
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/aws/amazon-ecs-agent/ecs-agent v0.0.0-20250123230738-0f876b5372c9 // indirect
 	github.com/aws/aws-sdk-go v1.55.6 // indirect
@@ -192,7 +175,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20220614013038-64ee5596c38a // indirect
-	github.com/tinylib/msgp v1.3.0
 	github.com/vishvananda/netlink v1.3.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/volatiletech/inflect v0.0.1 // indirect
