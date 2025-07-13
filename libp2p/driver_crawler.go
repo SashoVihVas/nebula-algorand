@@ -1,29 +1,14 @@
 package libp2p
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
-	"net/textproto"
+	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/dennis-tra/nebula-crawler/config"
-	"github.com/dennis-tra/nebula-crawler/core"
-	"github.com/dennis-tra/nebula-crawler/db"
-	"github.com/dennis-tra/nebula-crawler/kubo"
-	"github.com/dennis-tra/nebula-crawler/utils"
-	"github.com/tinylib/msgp/msgp"
-
-	"github.com/algorand/go-algorand/network/p2p"
-	"github.com/algorand/go-algorand/protocol"
-	// puredht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p"
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	kbucket "github.com/libp2p/go-libp2p-kbucket"
@@ -33,7 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	core_protocol "github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/record"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
@@ -42,279 +27,17 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/context"
 
-	algorand_config "github.com/algorand/go-algorand/config"
-	"github.com/algorand/go-algorand/logging"
+	"github.com/dennis-tra/nebula-crawler/config"
+	"github.com/dennis-tra/nebula-crawler/core"
+	"github.com/dennis-tra/nebula-crawler/db"
+	"github.com/dennis-tra/nebula-crawler/kubo"
+	"github.com/dennis-tra/nebula-crawler/utils"
 )
-
-// Handshake implementation based on go-algorand source code.
-const (
-	ProtocolVersionHeader          = "X-Algorand-Version"
-	ProtocolAcceptVersionHeader    = "X-Algorand-Accept-Version"
-	TelemetryIDHeader              = "X-Algorand-TelId"
-	GenesisHeader                  = "X-Algorand-Genesis"
-	NodeRandomHeader               = "X-Algorand-NodeRandom"
-	AddressHeader                  = "X-Algorand-Location"
-	InstanceNameHeader             = "X-Algorand-InstanceName"
-	PeerFeaturesHeader             = "X-Algorand-Peer-Features"
-	PeerFeatureProposalCompression = "ppzstd"
-	PeerFeatureVoteVpackCompression = "avvpack"
-
-	maxHeaderKeys   = 64
-	maxHeaderValues = 16
-)
-
-type peerMetadataProvider interface {
-	TelemetryGUID() string
-	InstanceName() string
-	GenesisID() string
-	PublicAddress() string
-	RandomID() string
-	SupportedProtoVersions() []string
-}
-
-type peerMetaInfo struct {
-	telemetryID  string
-	instanceName string
-	version      string
-	features     string
-}
-
-type peerMetaValues []string
-
-type peerMetaHeaders map[string]peerMetaValues
-
-func peerMetaHeadersToHTTPHeaders(headers peerMetaHeaders) http.Header {
-	httpHeaders := make(http.Header, len(headers))
-	for k, v := range headers {
-		httpHeaders[k] = v
-	}
-	return httpHeaders
-}
-
-func peerMetaHeadersFromHTTPHeaders(headers http.Header) peerMetaHeaders {
-	pmh := make(peerMetaHeaders, len(headers))
-	for k, v := range headers {
-		pmh[k] = v
-	}
-	return pmh
-}
-
-func setHeaders(header http.Header, netProtoVer string, meta peerMetadataProvider) {
-	header.Set(TelemetryIDHeader, meta.TelemetryGUID())
-	header.Set(InstanceNameHeader, meta.InstanceName())
-	if pa := meta.PublicAddress(); pa != "" {
-		header.Set(AddressHeader, pa)
-	}
-	if rid := meta.RandomID(); rid != "" {
-		header.Set(NodeRandomHeader, rid)
-	}
-	header.Set(GenesisHeader, meta.GenesisID())
-
-	features := []string{PeerFeatureProposalCompression}
-
-	header.Set(PeerFeaturesHeader, strings.Join(features, ","))
-
-	if netProtoVer != "" {
-		header.Set(ProtocolVersionHeader, netProtoVer)
-	}
-	for _, v := range meta.SupportedProtoVersions() {
-		header.Add(ProtocolAcceptVersionHeader, v)
-	}
-}
-
-func checkProtocolVersionMatch(otherHeaders http.Header, ourSupportedProtocolVersions []string) (string, string) {
-	otherAcceptedVersions := otherHeaders[textproto.CanonicalMIMEHeaderKey(ProtocolAcceptVersionHeader)]
-	for _, otherAcceptedVersion := range otherAcceptedVersions {
-		// --- Start of suggested change ---
-		for _, ourProto := range ourSupportedProtocolVersions {
-			// Check if our full protocol ID (e.g., "/algorand-ws/2.2.0")
-			// ends with the node's version (e.g., "/2.2" or "/2.2.0")
-			if strings.HasSuffix(ourProto, "/"+otherAcceptedVersion) || strings.HasSuffix(ourProto, "/"+otherAcceptedVersion+".0") {
-				return otherAcceptedVersion, ""
-			}
-		}
-		// --- End of suggested change ---
-	}
-
-	otherVersion := otherHeaders.Get(ProtocolVersionHeader)
-	// --- Start of suggested change ---
-	for _, ourProto := range ourSupportedProtocolVersions {
-		if strings.HasSuffix(ourProto, "/"+otherVersion) || strings.HasSuffix(ourProto, "/"+otherVersion+".0") {
-			return otherVersion, otherVersion
-		}
-	}
-	// --- End of suggested change ---
-
-	return "", otherVersion
-}
-
-type peerFeatureFlag int
-
-const (
-	pfCompressedProposal peerFeatureFlag = 1 << iota
-	pfCompressedVoteVpack
-)
-
-const versionPeerFeatures = "2.2"
-
-var versionPeerFeaturesNum [2]int64
-
-func init() {
-	var err error
-	versionPeerFeaturesNum[0], versionPeerFeaturesNum[1], err = versionToMajorMinor(versionPeerFeatures)
-	if err != nil {
-		panic(fmt.Sprintf("failed to parse version %v: %s", versionPeerFeatures, err.Error()))
-	}
-}
-
-func versionToMajorMinor(version string) (int64, int64, error) {
-	parts := strings.Split(version, ".")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("version %s does not have two components", version)
-	}
-	major, err := strconv.ParseInt(parts[0], 10, 8)
-	if err != nil {
-		return 0, 0, err
-	}
-	minor, err := strconv.ParseInt(parts[1], 10, 8)
-	if err != nil {
-		return 0, 0, err
-	}
-	return major, minor, nil
-}
-
-func decodePeerFeatures(version string, announcedFeatures string) peerFeatureFlag {
-	major, minor, err := versionToMajorMinor(version)
-	if err != nil {
-		return 0
-	}
-	if major < versionPeerFeaturesNum[0] || (major == versionPeerFeaturesNum[0] && minor < versionPeerFeaturesNum[1]) {
-		return 0
-	}
-	var features peerFeatureFlag
-	parts := strings.Split(announcedFeatures, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == PeerFeatureProposalCompression {
-			features |= pfCompressedProposal
-		}
-		if part == PeerFeatureVoteVpackCompression {
-			features |= pfCompressedVoteVpack
-		}
-	}
-	return features
-}
-
-func readPeerMetaHeaders(stream io.ReadWriter, p2pPeer peer.ID, netProtoSupportedVersions []string) (peerMetaInfo, error) {
-	var msgLenBytes [2]byte
-	rn, err := stream.Read(msgLenBytes[:])
-	if rn != 2 || err != nil {
-		err0 := fmt.Errorf("error reading response message length from peer %s: %w", p2pPeer, err)
-		return peerMetaInfo{}, err0
-	}
-	log.WithField("Received message's length:", msgLenBytes).Info("TRALALALA")
-
-	msgLen := binary.BigEndian.Uint16(msgLenBytes[:])
-	msgBytes := make([]byte, msgLen)
-	rn, err = stream.Read(msgBytes[:])
-	if rn != int(msgLen) || err != nil {
-		err0 := fmt.Errorf("error reading response message from peer %s: %w, expected: %d, read: %d", p2pPeer, err, msgLen, rn)
-		return peerMetaInfo{}, err0
-	}
-	log.Infof("Received message from %s: %x", p2pPeer, msgBytes)
-
-	var responseHeaders peerMetaHeaders
-	_, err = responseHeaders.UnmarshalMsg(msgBytes[:])
-	if err != nil {
-		err0 := fmt.Errorf("error unmarshaling response message from peer %s: %w", p2pPeer, err)
-		return peerMetaInfo{}, err0
-	}
-	headers := peerMetaHeadersToHTTPHeaders(responseHeaders)
-	matchingVersion, _ := checkProtocolVersionMatch(headers, netProtoSupportedVersions)
-	if matchingVersion == "" {
-		err0 := fmt.Errorf("peer %s does not support any of the supported protocol versions: %v", p2pPeer, netProtoSupportedVersions)
-		return peerMetaInfo{}, err0
-	}
-	return peerMetaInfo{
-		telemetryID:  headers.Get(TelemetryIDHeader),
-		instanceName: headers.Get(InstanceNameHeader),
-		version:      matchingVersion,
-		features:     headers.Get(PeerFeaturesHeader),
-	}, nil
-}
-
-func writePeerMetaHeaders(stream io.ReadWriter, p2pPeer peer.ID, networkProtoVersion string, pmp peerMetadataProvider) error {
-	header := make(http.Header)
-	setHeaders(header, networkProtoVersion, pmp)
-	meta := peerMetaHeadersFromHTTPHeaders(header)
-	data, err := meta.MarshalMsg(nil)
-	if err != nil {
-		return fmt.Errorf("error marshaling peer meta headers: %w", err)
-	}
-	length := len(data)
-	if length > math.MaxUint16 {
-		msg := fmt.Sprintf("error writing initial message, too large: %v, peer %s", header, p2pPeer)
-		panic(msg)
-	}
-	metaMsg := make([]byte, 2+length)
-	binary.BigEndian.PutUint16(metaMsg, uint16(length))
-	copy(metaMsg[2:], data)
-	log.WithField("Received message:", metaMsg).Info("LALALA")
-	_, err = stream.Write(metaMsg)
-	if err != nil {
-		err0 := fmt.Errorf("error sending initial message: %w", err)
-		return err0
-	}
-	return nil
-}
 
 type PeerInfo struct {
 	peer.AddrInfo
-}
-
-func (d *CrawlDriver) algorandStreamHandler(stream network.Stream) {
-	log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("New Algorand stream")
-
-	var err error
-	var pmi peerMetaInfo
-	if stream.Stat().Direction == network.DirOutbound {
-		log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("WE ARE INBOUND")
-		err = writePeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.protocolVersion, d)
-		if err != nil {
-			log.WithError(err).Warn("error reading peer meta headers")
-			_ = stream.Reset()
-			return
-		}
-		pmi, err = readPeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.cfg.Protocols)
-		if err != nil {
-			log.WithError(err).Warn("error writing peer meta headers")
-			_ = stream.Reset()
-			return
-		}
-	} else {
-		log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("WE ARE OUTBOUND")
-		err = writePeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.protocolVersion, d)
-		if err != nil {
-			log.WithError(err).Warn("error writing peer meta headers")
-			_ = stream.Reset()
-			return
-		}
-		pmi, err = readPeerMetaHeaders(stream, stream.Conn().RemotePeer(), d.cfg.Protocols)
-		if err != nil {
-			log.WithError(err).Warn("error reading peer meta headers")
-			_ = stream.Reset()
-			return
-		}
-	}
-	log.WithField("pmi_version", pmi.version).WithField("pmi_features", pmi.features).Info("Algorand handshake successful")
-
-	// Store the active stream
-	d.activeStreams.Store(stream.Conn().RemotePeer(), stream)
-	log.WithField("remotePeer", stream.Conn().RemotePeer()).Info("Stored active Algorand stream")
-
-	// Set a deadline to detect stream closure
-	stream.SetDeadline(time.Now().Add(20 * time.Second)) // Adjust timeout as needed
 }
 
 var _ core.PeerInfo[PeerInfo] = (*PeerInfo)(nil)
@@ -379,151 +102,117 @@ func (cfg *CrawlDriverConfig) WriterConfig() *core.CrawlWriterConfig {
 }
 
 type CrawlDriver struct {
-	cfg             *CrawlDriverConfig
-	host            *Host
-	discoveries     map[peer.ID]*p2p.CapabilitiesDiscovery
-	dbc             db.Client
-	pxPeersChan     chan []PeerInfo
-	tasksChan       chan PeerInfo
+	cfg   *CrawlDriverConfig
+	hosts map[peer.ID]*Host
+	dbc   db.Client
+
+	// pxPeersChan receives peers that we get to know
+	// via the GossipSub Peer Exchange PX mechanism
+	pxPeersChan chan []PeerInfo
+
+	// tasksChan will be read by the engine and allows
+	// the driver to submit tasks (peers to crawl) to
+	// the engine. In the case when GossipSubPX is disabled,
+	// the channel will be closed immediately after the
+	// bootstrap peers have been sent to it. If GossipSubPX
+	// is enabled, the driver will sent new peers to it as
+	// they are discovered via GossipSub.
+	tasksChan chan PeerInfo
+
+	// workerStateChan receives the strings "busy" or "idle"
+	// from the workers. This is used by the GossipSub monitoring
+	// go routine to determine if the crawl is still running.
+	// If all workers are idle for more than 1s it'll stop listening
+	// for GossipSub messages.
 	workerStateChan chan string
 	crawlerCount    int
 	writerCount     int
-	protocolVersion string
-	activeStreams   sync.Map
 }
-
-func (d *CrawlDriver) TelemetryGUID() string {
-	return "nebula-crawler"
-}
-
-func (d *CrawlDriver) InstanceName() string {
-	return "nebula-instance"
-}
-
-func (d *CrawlDriver) GenesisID() string {
-	return "testnet-v1.0"
-}
-
-func (d *CrawlDriver) PublicAddress() string {
-	return ""
-}
-
-func (d *CrawlDriver) RandomID() string {
-	return ""
-}
-
-func (d *CrawlDriver) SupportedProtoVersions() []string {
-	return d.cfg.Protocols
-}
-
 
 var _ core.Driver[PeerInfo, core.CrawlResult[PeerInfo]] = (*CrawlDriver)(nil)
 
 func NewCrawlDriver(dbc db.Client, cfg *CrawlDriverConfig) (*CrawlDriver, error) {
-    userAgent := "nebula/" + cfg.Version
-    if cfg.Network == config.NetworkAvailTuringLC || cfg.Network == config.NetworkAvailMainnetLC {
-        userAgent = "avail-light-client/light-client/1.12.13/rust-client"
-    }
+	// The Avail light clients verify the agent version:
+	// https://github.com/availproject/avail-light/blob/0ddc5d50d6f3d7217c448d6d008846c6b8c4fec3/src/network/p2p/event_loop.rs#L296
+	// Spoof it
+	userAgent := "nebula/" + cfg.Version
+	if cfg.Network == config.NetworkAvailTuringLC || cfg.Network == config.NetworkAvailMainnetLC {
+		userAgent = "avail-light-client/light-client/1.12.13/rust-client"
+	}
 
-    // Create a single shared host
-    host, err := newLibp2pHost(userAgent)
-    if err != nil {
-        return nil, fmt.Errorf("new libp2p host: %w", err)
-    }
+	hosts := make(map[peer.ID]*Host, runtime.NumCPU())
+	for i := 0; i < runtime.NumCPU(); i++ {
+		h, err := newLibp2pHost(userAgent)
+		if err != nil {
+			return nil, fmt.Errorf("new libp2p host: %w", err)
+		}
+		hosts[h.ID()] = h
+	}
 
-    tasksChan := make(chan PeerInfo, len(cfg.BootstrapPeers))
-    for _, addrInfo := range cfg.BootstrapPeers {
-        tasksChan <- PeerInfo{AddrInfo: addrInfo}
-    }
+	tasksChan := make(chan PeerInfo, len(cfg.BootstrapPeers))
+	for _, addrInfo := range cfg.BootstrapPeers {
+		addrInfo := addrInfo
+		tasksChan <- PeerInfo{AddrInfo: addrInfo}
+	}
 
-    // Initialize the map for discoveries. Even with a single host, the key is the peer ID.
-    discoveries := make(map[peer.ID]*p2p.CapabilitiesDiscovery)
+	d := &CrawlDriver{
+		cfg:             cfg,
+		hosts:           hosts,
+		dbc:             dbc,
+		tasksChan:       tasksChan,
+		pxPeersChan:     make(chan []PeerInfo),
+		workerStateChan: make(chan string, cfg.WorkerCount),
+		crawlerCount:    0,
+		writerCount:     0,
+	}
 
-    if cfg.Network == config.NetworkAlgoTestnet {
-        networkID := protocol.NetworkID("testnet-v1.0")
-        dhtCfg := algorand_config.GetDefaultLocal()
-        logger := logging.NewLogger() // A simple logger for initialization
+	if cfg.GossipSubPX {
+		go d.monitorGossipSubPX()
 
-        // A simple bootstrap function that returns the initial peer list
-        bootstrapFunc := func() []peer.AddrInfo {
-            return cfg.BootstrapPeers
-        }
+		for _, h := range hosts {
+			for _, protID := range pubsub.GossipSubDefaultProtocols {
+				h.SetStreamHandler(protID, d.handleGossipSubStream)
+			}
+		}
+	} else {
+		close(tasksChan)
+	}
 
-        // Use the single host to create the capabilities discovery service
-        disc, err := p2p.MakeCapabilitiesDiscovery(context.Background(), dhtCfg, host, networkID, logger, bootstrapFunc)
-        if err != nil {
-            return nil, fmt.Errorf("failed to create capabilities discovery for host %s: %w", host.ID(), err)
-        }
-        discoveries[host.ID()] = disc
-    }
-
-    d := &CrawlDriver{
-        cfg:             cfg,
-        host:            host, // Assign the single host instance
-        discoveries:     discoveries,
-        dbc:             dbc,
-        tasksChan:       tasksChan,
-        pxPeersChan:     make(chan []PeerInfo),
-        workerStateChan: make(chan string, cfg.WorkerCount),
-        crawlerCount:    0,
-        writerCount:     0,
-        protocolVersion: "2.2",
-    }
-
-    if cfg.Network == config.NetworkAlgoTestnet {
-        // Set the stream handler on the single host
-        host.SetStreamHandler("/algorand-ws/2.2.0", d.algorandStreamHandler)
-    }
-
-    if cfg.GossipSubPX {
-        go d.monitorGossipSubPX()
-
-        // Set the stream handler for all protocols on the single host
-        for _, protID := range d.cfg.Protocols {
-            host.SetStreamHandler(core_protocol.ID(protID), d.handleGossipSubStream)
-        }
-    } else {
-        close(tasksChan)
-    }
-
-    return d, nil
+	return d, nil
 }
 
 func (d *CrawlDriver) NewWorker() (core.Worker[PeerInfo, core.CrawlResult[PeerInfo]], error) {
-    var pm *pb.ProtocolMessenger
-    if d.cfg.Network != config.NetworkAlgoTestnet {
-        allProtocols := make([]core_protocol.ID, len(d.cfg.Protocols))
-        for i, p := range d.cfg.Protocols {
-            allProtocols[i] = core_protocol.ID(p)
-        }
+	hostsList := make([]string, 0, len(d.hosts))
+	for _, h := range d.hosts {
+		hostsList = append(hostsList, string(h.ID()))
+	}
+	sort.Strings(hostsList)
+	hostID := peer.ID(hostsList[d.crawlerCount%len(d.hosts)])
 
-        ms := &msgSender{
-            h:         d.host.Host, // Use the single host instance
-            protocols: allProtocols,
-            timeout:   d.cfg.DialTimeout,
-        }
+	ms := &msgSender{
+		h:         d.hosts[hostID].Host,
+		protocols: protocol.ConvertFromStrings(d.cfg.Protocols),
+		timeout:   d.cfg.DialTimeout,
+	}
 
-        var err error
-        pm, err = pb.NewProtocolMessenger(ms)
-        if err != nil {
-            return nil, fmt.Errorf("new protocol messenger: %w", err)
-        }
-    }
+	pm, err := pb.NewProtocolMessenger(ms)
+	if err != nil {
+		return nil, fmt.Errorf("new protocol messenger: %w", err)
+	}
 
-    c := &Crawler{
-        id:        fmt.Sprintf("crawler-%02d", d.crawlerCount),
-        host:      d.host, // Use the single host instance
-        pm:        pm,
-        psTopics:  make(map[string]struct{}),
-        cfg:       d.cfg.CrawlerConfig(),
-        client:    kubo.NewClient(),
-        stateChan: d.workerStateChan,
-        driver:    d, // Pass the driver
-    }
+	c := &Crawler{
+		id:        fmt.Sprintf("crawler-%02d", d.crawlerCount),
+		host:      d.hosts[hostID],
+		pm:        pm,
+		psTopics:  make(map[string]struct{}),
+		cfg:       d.cfg.CrawlerConfig(),
+		client:    kubo.NewClient(),
+		stateChan: d.workerStateChan,
+	}
 
-    d.crawlerCount += 1
+	d.crawlerCount += 1
 
-    return c, nil
+	return c, nil
 }
 
 func (d *CrawlDriver) NewWriter() (core.Worker[core.CrawlResult[PeerInfo], core.WriteResult], error) {
@@ -552,21 +241,22 @@ func (d *CrawlDriver) Close() {
 
 func (d *CrawlDriver) shutdown() {
 	var wgHostClose sync.WaitGroup
-	wgHostClose.Add(1)
-	go func(h *Host) {
-		defer wgHostClose.Done()
-		if err := h.Close(); err != nil {
-			log.WithError(err).Warnln("failed to close host")
-		}
-	}(d.host) // Pass the single host instance
+	for _, h := range d.hosts {
+		wgHostClose.Add(1)
+		go func(h *Host) {
+			defer wgHostClose.Done()
+			if err := h.Close(); err != nil {
+				log.WithError(err).Warnln("failed to close host")
+			}
+		}(h)
+	}
 
 	var wgTasksClose sync.WaitGroup
 	wgTasksClose.Add(1)
 	go func() {
-		defer wgTasksClose.Done()
 		for range d.tasksChan {
-			// Draining the channel
 		}
+		wgTasksClose.Done()
 	}()
 
 	wgHostClose.Wait()
@@ -613,9 +303,13 @@ LOOP:
 }
 
 func newLibp2pHost(userAgent string) (*Host, error) {
+	// Configure the resource manager to not limit anything
+	// Don't use a connection manager that could potentially
+	// prune any connections. We clean up after ourselves.
 	cm := connmgr.NullConnMgr{}
 	rm := network.NullResourceManager{}
 
+	// Initialize a single libp2p node that's shared between all crawlers.
 	h, err := libp2p.New(
 		libp2p.UserAgent(userAgent),
 		libp2p.ResourceManager(&rm),
@@ -633,30 +327,33 @@ func newLibp2pHost(userAgent string) (*Host, error) {
 	return WrapHost(h)
 }
 
+// handleGossipSubStream manages a GossipSub stream between two peers. It first
+// read the "hello" gossip sub message which contains all active subscriptions
+// by the remote peer. Then we open and outgoing stream to the remote peer and
+// just mirror back the subscriptions. Then we try to graft the remote peer on
+// all topics in the hope that we are the one that exceeds Dhi for the mesh of
+// the remote peer. In that case the peer will send a PRUNE message to us that
+// contains signed peer records which we'll feed into the [core.Engine] to
+// continue the crawl.
 func (d *CrawlDriver) handleGossipSubStream(incomingStream network.Stream) {
-	defer func() {
-		if err := incomingStream.Reset(); err != nil {
-			log.WithError(err).Warnln("Failed to reset incoming stream")
-		}
-	}()
+	defer incomingStream.Reset()
 
 	remoteID := incomingStream.Conn().RemotePeer()
+	localID := incomingStream.Conn().LocalPeer()
 
+	// read hello RPC from the remote to get to know all subscriptions
 	helloRPC, err := readRPC(incomingStream)
 	if err != nil {
 		return
 	}
 
-	outgoingStream, err := d.host.NewStream(context.Background(), remoteID, pubsub.GossipSubDefaultProtocols...)
+	outgoingStream, err := d.hosts[localID].NewStream(context.Background(), remoteID, pubsub.GossipSubDefaultProtocols...)
 	if err != nil {
 		return
 	}
-	defer func() {
-		if err := outgoingStream.Reset(); err != nil {
-			log.WithError(err).Warnln("Failed to reset outgoing stream")
-		}
-	}()
+	defer outgoingStream.Reset()
 
+	// let the remote know that we're interested in the exact same topics
 	if err = writeRPC(outgoingStream, helloRPC); err != nil {
 		return
 	}
@@ -672,10 +369,12 @@ func (d *CrawlDriver) handleGossipSubStream(incomingStream network.Stream) {
 		}
 	}
 
+	// graft the remote peer on all topics we got to know in the hello RPC
 	if err = writeRPC(outgoingStream, graftRPC); err != nil {
 		return
 	}
 
+	// wait until we get a PRUNE
 	for {
 		rpc, err := readRPC(incomingStream)
 		if err != nil {
@@ -722,12 +421,15 @@ func writeRPC(s network.Stream, rpc *pubsub_pb.RPC) error {
 	}
 
 	if err = msgio.NewVarintWriter(s).WriteMsg(data); err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
+		return fmt.Errorf("failed to read message: %w", err)
 	}
 
 	return nil
 }
 
+// parseSignedPeerRecord extracts peer information from a signed peer record.
+// It validates and unmarshals the record to return a peer.AddrInfo instance.
+// Returns an error if the record is invalid or unmarshalling fails.
 func parseSignedPeerRecord(signedPeerRecord []byte) (*peer.AddrInfo, error) {
 	envelope, err := record.UnmarshalEnvelope(signedPeerRecord)
 	if err != nil {
@@ -756,6 +458,8 @@ func parseSignedPeerRecord(signedPeerRecord []byte) (*peer.AddrInfo, error) {
 	return &addrInfo, nil
 }
 
+// openInboundGossipSubStreams counts inbound GossipSub protocol streams.
+// Returns the total number of open inbound GossipSub streams.
 func openInboundGossipSubStreams(h host.Host, pid peer.ID) int {
 	openStreams := 0
 	for _, conn := range h.Network().ConnsToPeer(pid) {
@@ -764,93 +468,15 @@ func openInboundGossipSubStreams(h host.Host, pid peer.ID) int {
 				continue
 			}
 			switch stream.Protocol() {
-			case pubsub.GossipSubID_v10, pubsub.GossipSubID_v11, pubsub.GossipSubID_v12, pubsub.FloodSubID:
-				openStreams++
+			case pubsub.GossipSubID_v10:
+			case pubsub.GossipSubID_v11:
+			case pubsub.GossipSubID_v12:
+			case pubsub.FloodSubID:
+			default:
+				continue
 			}
+			openStreams += 1
 		}
 	}
 	return openStreams
-}
-
-// UnmarshalMsg implements msgp.Unmarshaler
-func (z *peerMetaHeaders) UnmarshalMsg(bts []byte) (o []byte, err error) {
-	var zb0004 uint32 // Keep as uint32
-	zb0004, bts, err = msgp.ReadMapHeaderBytes(bts)
-	if err != nil {
-		err = msgp.WrapError(err)
-		return
-	}
-	if (*z) == nil {
-		(*z) = make(peerMetaHeaders, int(zb0004)) // Cast to int for make()
-	} else if len(*z) > 0 {
-		for key := range *z {
-			delete(*z, key)
-		}
-	}
-	for zb0004 > 0 {
-		var zb0001 string
-		var zb0002 peerMetaValues
-		zb0004--
-		zb0001, bts, err = msgp.ReadStringBytes(bts)
-		if err != nil {
-			err = msgp.WrapError(err)
-			return
-		}
-		var zb0006 uint32 // Keep as uint32
-		zb0006, bts, err = msgp.ReadArrayHeaderBytes(bts)
-		if err != nil {
-			err = msgp.WrapError(err, zb0001)
-			return
-		}
-		if cap(zb0002) >= int(zb0006) {
-			zb0002 = (zb0002)[:int(zb0006)] // Cast to int for slicing
-		} else {
-			zb0002 = make(peerMetaValues, int(zb0006)) // Cast to int for make()
-		}
-		for zb0003 := range zb0002 {
-			zb0002[zb0003], bts, err = msgp.ReadStringBytes(bts)
-			if err != nil {
-				err = msgp.WrapError(err, zb0001, zb0003)
-				return
-			}
-		}
-		(*z)[zb0001] = zb0002
-	}
-	o = bts
-	return
-}
-
-// MarshalMsg implements msgp.Marshaler
-func (z peerMetaHeaders) MarshalMsg(b []byte) (o []byte, err error) {
-	o = msgp.Require(b, z.Msgsize())
-	o = msgp.AppendMapHeader(o, uint32(len(z)))
-	keys := make([]string, 0, len(z))
-	for k := range z {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		o = msgp.AppendString(o, k)
-		o = msgp.AppendArrayHeader(o, uint32(len(z[k])))
-		for za0002 := range z[k] {
-			o = msgp.AppendString(o, z[k][za0002])
-		}
-	}
-	return o, nil
-}
-
-// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
-func (z peerMetaHeaders) Msgsize() (s int) {
-	s = msgp.MapHeaderSize
-	if z != nil {
-		for k, v := range z {
-			_ = k
-			_ = v
-			s += msgp.StringPrefixSize + len(k) + msgp.ArrayHeaderSize
-			for za0002 := range v {
-				s += msgp.StringPrefixSize + len(v[za0002])
-			}
-		}
-	}
-	return
 }
