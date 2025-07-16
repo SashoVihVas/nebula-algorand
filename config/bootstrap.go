@@ -422,4 +422,8 @@ var (
 	BootstrapPeersAlgoMainnet = []string{
 		"/ip4/64.227.112.163/tcp/4161/p2p/12D3KooWAUFhQq394HsYTw18bqG3dwsfrGScZceCK7QsieakVMst",
 	}
+
+	BootstrapPeersAlgoSuppranet = []string{
+		"/ip4/64.227.112.163/tcp/4161/p2p/12D3KooWAUFhQq394HsYTw18bqG3dwsfrGScZceCK7QsieakVMst",
+	}
 )
