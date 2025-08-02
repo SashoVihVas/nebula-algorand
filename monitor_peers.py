@@ -2,17 +2,32 @@ import json
 import os
 import time
 import subprocess
+import argparse
 
-def run_go_program():
+
+PROFILES = {
+    'mainnet': ["--network", "ALGORAND_MAINNET"],
+    'testnet': ["--network", "ALGORAND_TESTNET"],
+    'suppranet': [
+        "--network", "ALGORAND_SUPPRANET",
+        "--addr-dial-type", "private"
+    ]
+}
+
+def run_go_program(network_args, results_dir):
     """
     Calls the nebula Go program to crawl the network and generate new results files.
+    'network_args' is a list of strings for the specific crawl command.
     """
     print("Running nebula crawl command...")
-    command = ["nebula", "--json-out", "./results/", "crawl", "--network", "ALGORAND_MAINNET"]
+    base_command = ["nebula", "--json-out", f"./{results_dir}/", "crawl"]
+    command = base_command + network_args
+
+    print(f"Executing: {' '.join(command)}")
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         print("Nebula crawl finished successfully.")
-        return get_latest_file("results")
+        return get_latest_file(results_dir)
     except FileNotFoundError:
         print("\n---")
         print("Error: 'nebula' command not found.")
@@ -38,10 +53,7 @@ def get_latest_file(directory):
     return max(files, key=os.path.getctime)
 
 def read_peers_to_dict(filepath):
-    """
-    Reads a neighbors.ndjson file and returns a dictionary
-    mapping PeerID to its full JSON data object.
-    """
+    """Reads a neighbors.ndjson file and returns a dictionary mapping PeerID to its full JSON data object."""
     peers_data = {}
     try:
         with open(filepath, "r") as f:
@@ -66,36 +78,65 @@ def write_peers_from_dict(filepath, peers_data):
 
 def main():
     """Main function to orchestrate the monitoring and updating process."""
-    main_file = "neighbors.ndjson"
-    results_dir = "results"
-    wait_interval = 60  # seconds to wait between crawls
+
+    parser = argparse.ArgumentParser(
+        description="Monitor a libp2p network by repeatedly crawling it and aggregating peer data."
+    )
+
+    subparsers = parser.add_subparsers(dest='network_profile', required=True, help='Available network profiles')
+
+    parser_mainnet = subparsers.add_parser('mainnet', help='Monitor the ALGORAND_MAINNET network')
+
+    parser_testnet = subparsers.add_parser('testnet', help='Monitor the ALGORAND_TESTNET network')
+
+    parser_suppranet = subparsers.add_parser('suppranet', help='Monitor a custom SUPPRANET network')
+
+    parser_suppranet.add_argument(
+        '--bootstrap-peers',
+        required=True,
+        help='A mandatory bootstrap peer string for the suppranet profile (e.g., /dns4/node.example.com/...)',
+        type=str
+    )
+
+    args = parser.parse_args()
+    profile_name = args.network_profile
+
+    network_args = PROFILES[profile_name]
+
+    if profile_name == 'suppranet':
+        network_args.extend(["--bootstrap-peers", args.bootstrap_peers])
+
+    main_file = f"{profile_name}_neighbors.ndjson"
+    results_dir = f"results_{profile_name}"
+    wait_interval = 60
+
+    print(f"--- Starting monitor for profile: {profile_name} ---")
+    print(f"Master file: {main_file}")
+    print(f"Results dir: {results_dir}")
+    print("-------------------------------------------------")
 
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
-    # --- Bootstrap Logic ---
-    # If the main file doesn't exist, we need to create it first.
     if not os.path.exists(main_file):
         print(f"'{main_file}' not found. Running initial crawl...")
-        initial_crawl_file = run_go_program()
+        # Pass the correct arguments and results_dir
+        initial_crawl_file = run_go_program(network_args, results_dir)
         if initial_crawl_file and os.path.exists(initial_crawl_file):
             print(f"Creating '{main_file}' from '{initial_crawl_file}'.")
             with open(initial_crawl_file, "r") as f_in, open(main_file, "w") as f_out:
                 f_out.write(f_in.read())
 
-            # Wait for the full interval after the initial crawl before starting the monitor loop.
             print(f"Initial file created. Waiting for {wait_interval} seconds before starting monitoring...")
             time.sleep(wait_interval)
         else:
             print("Could not generate an initial data file. Exiting.")
             return
 
-    # --- Monitoring Loop ---
     consecutive_no_change_runs = 0
     while consecutive_no_change_runs < 3:
-        # Now, the first crawl inside this loop is the *second* overall crawl,
-        # which is the first meaningful comparison.
-        new_crawl_file = run_go_program()
+        # Pass the correct arguments and results_dir on each loop
+        new_crawl_file = run_go_program(network_args, results_dir)
 
         if not new_crawl_file:
             print(f"Failed to get new results from nebula. Retrying in {wait_interval} seconds...")
@@ -110,26 +151,20 @@ def main():
         has_changed = False
 
         for peer_id, new_peer_info in new_peers_data.items():
-            # Case 1: The peer is entirely new.
             if peer_id not in main_peers_data:
                 print(f"Found new PeerID: {peer_id}. Adding to records.")
                 main_peers_data[peer_id] = new_peer_info
                 has_changed = True
                 continue
 
-            # Case 2: The peer exists. Check for new neighbors in an additive way.
             existing_peer_info = main_peers_data[peer_id]
             existing_neighbors = set(existing_peer_info.get("NeighborIDs", []))
             new_neighbors = set(new_peer_info.get("NeighborIDs", []))
-
-            # Find neighbors that are in the new set but not the existing one.
             added_neighbors = new_neighbors - existing_neighbors
 
             if added_neighbors:
                 print(f"Found {len(added_neighbors)} new neighbor(s) for PeerID: {peer_id}.")
-                # Add the new neighbors to the existing list.
                 existing_peer_info["NeighborIDs"].extend(list(added_neighbors))
-                # Also update the ErrorBits, in case it changed (e.g., from error to success)
                 existing_peer_info["ErrorBits"] = new_peer_info.get("ErrorBits", "0")
                 has_changed = True
 
@@ -143,12 +178,11 @@ def main():
 
         print(f"Consecutive runs with no changes: {consecutive_no_change_runs}")
         if consecutive_no_change_runs < 3:
-            # Also updated this to use the variable for consistency.
             print(f"Waiting for {wait_interval} seconds before next crawl...")
             time.sleep(wait_interval)
 
     print("\n-----------------------------------------------------")
-    print("Network stabilized. No additive changes found in 3 consecutive runs.")
+    print(f"Network '{profile_name}' stabilized. No additive changes found in 3 consecutive runs.")
     print(f"The final aggregated data is in '{main_file}'.")
     print("-----------------------------------------------------")
 
