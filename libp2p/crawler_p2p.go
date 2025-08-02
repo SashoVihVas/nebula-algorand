@@ -341,7 +341,7 @@ func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.Rou
 
 func (c *Crawler) drainBucket(ctx context.Context, rt *kbucket.RoutingTable, pid peer.ID, bucket uint) ([]*peer.AddrInfo, error) {
 	// Generate a peer with the given common prefix length
-	rpi, err := rt.GenRandPeerID(bucket)
+	_, err := rt.GenRandPeerID(bucket)
 	if err != nil {
 		log.WithError(err).WithField("enr", pid.ShortString()).WithField("bucket", bucket).Warnln("Failed generating random peer ID")
 		return nil, fmt.Errorf("generating random peer ID with CPL %d: %w", bucket, err)
@@ -349,7 +349,7 @@ func (c *Crawler) drainBucket(ctx context.Context, rt *kbucket.RoutingTable, pid
 
 	var neighbors []*peer.AddrInfo
 	for retry := 0; retry < 2; retry++ {
-		neighbors, err = c.pm.GetClosestPeers(ctx, pid, rpi)
+		neighbors, err = c.pm.GetClosestPeers(ctx, pid, pid)
 		if err == nil {
 			// getting closest peers was successful!
 			return neighbors, nil
