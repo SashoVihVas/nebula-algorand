@@ -426,7 +426,13 @@ var (
 	}
 
 	BootstrapPeersAlgoMainnet = []string{
-		"/ip4/64.227.112.163/tcp/4161/p2p/12D3KooWAUFhQq394HsYTw18bqG3dwsfrGScZceCK7QsieakVMst",
+		"/dns4/r-aa.algorand-mainnet.net/tcp/4190/p2p/12D3KooWSH9L2dT6GYUg2HKXDzNiY3tjH75ibU4yJsWVWGaQRZ2x",
+		"/dns4/r-jg.algorand-mainnet.net/tcp/4190/p2p/12D3KooWCMWjHGwi8azNw4RcH2FaRZ5oRNF9WL4SQhLBeScy6mii",
+		"/dns4/r-sa.algorand-mainnet.net/tcp/4190/p2p/12D3KooWSdurxomMn38Fk6aqXY1FgWmMnththYxUXX8BNz8N5Kyk",
+		"/dns4/r-eh.algorand-mainnet.net/tcp/4190/p2p/12D3KooWPtoCdKuuChZCUPUUEkwy6eLbpVdhhCpRvMtWj4GfAwre",
+		"/dns4/r-xw.algorand-mainnet.net/tcp/4190/p2p/12D3KooWMCaUSV4NQzGCADeLVwBsSMQMBBLdVjxCevN5ihbFXSeq",
+		"/dns4/r-bg.algorand-mainnet.net/tcp/4190/p2p/12D3KooWCQgWskZBa2MNSiN9ZFJUEN1NwfKk4MqqqFKdqr6gNhYe",
+		"/dns4/r-s5.algorand-mainnet.net/tcp/4190/p2p/12D3KooWLm9KfdDC9VNmfBdLpTozHbBYhKyoyBL6a9efi4pRW1Cf",
 	}
 
 	BootstrapPeersAlgoSuppranet = []string{
