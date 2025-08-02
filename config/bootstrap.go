@@ -433,6 +433,7 @@ var (
 		"/dns4/r-xw.algorand-mainnet.net/tcp/4190/p2p/12D3KooWMCaUSV4NQzGCADeLVwBsSMQMBBLdVjxCevN5ihbFXSeq",
 		"/dns4/r-bg.algorand-mainnet.net/tcp/4190/p2p/12D3KooWCQgWskZBa2MNSiN9ZFJUEN1NwfKk4MqqqFKdqr6gNhYe",
 		"/dns4/r-s5.algorand-mainnet.net/tcp/4190/p2p/12D3KooWLm9KfdDC9VNmfBdLpTozHbBYhKyoyBL6a9efi4pRW1Cf",
+		"/dns4/r-8o.algorand-mainnet.net/tcp/4190/p2p/12D3KooWK7NV2QpMu8T8qjhyH1DTjMmHwDAHcX296VYcgy3YBZ1C",
 	}
 
 	BootstrapPeersAlgoSuppranet = []string{
