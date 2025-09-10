@@ -106,36 +106,26 @@ def main():
     if profile_name == 'suppranet':
         network_args.extend(["--bootstrap-peers", args.bootstrap_peers])
 
-    main_file = f"{profile_name}_neighbors.ndjson"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    final_output_file = f"{profile_name}_neighbors_{timestamp}.ndjson"
+
     results_dir = f"results_{profile_name}"
     wait_interval = 60
 
     print(f"--- Starting monitor for profile: {profile_name} ---")
-    print(f"Master file: {main_file}")
+    print(f"Output file for this run: {final_output_file}")
     print(f"Results dir: {results_dir}")
     print("-------------------------------------------------")
 
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
-    if not os.path.exists(main_file):
-        print(f"'{main_file}' not found. Running initial crawl...")
-        # Pass the correct arguments and results_dir
-        initial_crawl_file = run_go_program(network_args, results_dir)
-        if initial_crawl_file and os.path.exists(initial_crawl_file):
-            print(f"Creating '{main_file}' from '{initial_crawl_file}'.")
-            with open(initial_crawl_file, "r") as f_in, open(main_file, "w") as f_out:
-                f_out.write(f_in.read())
-
-            print(f"Initial file created. Waiting for {wait_interval} seconds before starting monitoring...")
-            time.sleep(wait_interval)
-        else:
-            print("Could not generate an initial data file. Exiting.")
-            return
 
     consecutive_no_change_runs = 0
+
+    aggregated_peers_data = {}
+
     while consecutive_no_change_runs < 3:
-        # Pass the correct arguments and results_dir on each loop
         new_crawl_file = run_go_program(network_args, results_dir)
 
         if not new_crawl_file:
@@ -143,21 +133,20 @@ def main():
             time.sleep(wait_interval)
             continue
 
-        print(f"Comparing '{main_file}' with new results from '{new_crawl_file}'...")
+        print(f"Aggregating new results from '{new_crawl_file}'...")
 
-        main_peers_data = read_peers_to_dict(main_file)
         new_peers_data = read_peers_to_dict(new_crawl_file)
 
         has_changed = False
 
         for peer_id, new_peer_info in new_peers_data.items():
-            if peer_id not in main_peers_data:
+            if peer_id not in aggregated_peers_data:
                 print(f"Found new PeerID: {peer_id}. Adding to records.")
-                main_peers_data[peer_id] = new_peer_info
+                aggregated_peers_data[peer_id] = new_peer_info
                 has_changed = True
                 continue
 
-            existing_peer_info = main_peers_data[peer_id]
+            existing_peer_info = aggregated_peers_data[peer_id]
             existing_neighbors = set(existing_peer_info.get("NeighborIDs", []))
             new_neighbors = set(new_peer_info.get("NeighborIDs", []))
             added_neighbors = new_neighbors - existing_neighbors
@@ -169,21 +158,24 @@ def main():
                 has_changed = True
 
         if has_changed:
-            print(f"Network state changed. Updating '{main_file}'.")
-            write_peers_from_dict(main_file, main_peers_data)
+            print(f"Network state changed. Updating in-memory records.")
             consecutive_no_change_runs = 0
         else:
-            print("No new peers or neighbors found in this run.")
+            print("No new peers or neighbors found in this crawl.")
             consecutive_no_change_runs += 1
 
-        print(f"Consecutive runs with no changes: {consecutive_no_change_runs}")
+
+        print(f"Writing current aggregated data to '{final_output_file}'.")
+        write_peers_from_dict(final_output_file, aggregated_peers_data)
+
+        print(f"Consecutive crawls with no changes: {consecutive_no_change_runs}")
         if consecutive_no_change_runs < 3:
             print(f"Waiting for {wait_interval} seconds before next crawl...")
             time.sleep(wait_interval)
 
     print("\n-----------------------------------------------------")
-    print(f"Network '{profile_name}' stabilized. No additive changes found in 3 consecutive runs.")
-    print(f"The final aggregated data is in '{main_file}'.")
+    print(f"Network '{profile_name}' stabilized. No additive changes found in 3 consecutive crawls.")
+    print(f"The final aggregated data for this run is saved in '{final_output_file}'.")
     print("-----------------------------------------------------")
 
 if __name__ == "__main__":
