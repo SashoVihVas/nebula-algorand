@@ -3,7 +3,6 @@ package libp2p
 import (
 	"context"
 	"fmt"
-	"github.com/libp2p/go-libp2p/core/protocol"
 	"os"
 	//"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	//"go.uber.org/atomic"
 	//"golang.org/x/sync/errgroup"
+	crawlerconfig "github.com/dennis-tra/nebula-crawler/config"
 
 	"github.com/dennis-tra/nebula-crawler/core"
 	"github.com/dennis-tra/nebula-crawler/db"
@@ -21,8 +21,8 @@ import (
 	"github.com/algorand/go-algorand/logging"
 	algonet "github.com/algorand/go-algorand/network"
 	algonetp2p "github.com/algorand/go-algorand/network/p2p"
-	aprotocol "github.com/algorand/go-algorand/protocol"
 	dhtcrawler "github.com/libp2p/go-libp2p-kad-dht/crawler"
+	identify "github.com/libp2p/go-libp2p/p2p/protocol/identify"
 )
 
 type P2PResult struct {
@@ -75,44 +75,49 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 
 	go func() {
 		defer close(resultCh)
-		// No need for the defer function to close the peer connection,
-		// as the 'net' object from 'connect' handles its own lifecycle.
 
 		result := P2PResult{
 			RoutingTable: &core.RoutingTable[PeerInfo]{PeerID: pi.ID()},
 		}
 
-		// The original code used c.host to register for identify results.
-		// Since the new logic uses a separate network stack from the `connect` function,
-		// the original identify logic may no longer be applicable in the same way.
-		// For this adjustment, we focus on the DHT query part as requested.
-		// If identify information is still needed, it would require a deeper integration
-		// with the algonet stack.
-
-		var net *algonet.P2PNetwork // Adjusted type to match 'connect' return
+		// Establish Algorand P2P network connection
 		result.ConnectStartTime = time.Now()
-		net, result.ConnectError = c.connect(ctx, pi.AddrInfo) // use filtered addr list
+		net, cleanup, err := c.connect(ctx, pi.AddrInfo)
 		result.ConnectEndTime = time.Now()
+		if cleanup != nil {
+			defer cleanup()
+		}
 
-		// If we could successfully connect to the peer we actually crawl it.
-		if result.ConnectError == nil {
-			// Note: The original logic for getting ConnectMaddr, Transport, Agent, Protocols
-			// was tied to the libp2p `network.Conn` and `identify` service.
-			// The new `connect` function returns an `algonet.P2PNetwork` object.
-			// We proceed with the core requirement: draining buckets with the new logic.
-
-			// Fetch all neighbors using the new logic
+		if err == nil {
+			// Crawl via DHT RPC using the live StreamHost
 			result.RoutingTable, result.CrawlError = c.queryConnectedPeer(ctx, pi.AddrInfo, net)
+			if h := net.HttpServer.StreamHost; h != nil {
+				// brief wait window for identify to complete
+				deadline := time.Now().Add(2 * time.Second)
+				for {
+					if av, err := h.Peerstore().Get(pi.ID(), "AgentVersion"); err == nil {
+						if s, ok := av.(string); ok {
+							result.Agent = s
+						}
+					}
+					if prots, err := h.Peerstore().GetProtocols(pi.ID()); err == nil && len(prots) > 0 {
+						result.Protocols = make([]string, 0, len(prots))
+						for _, p := range prots {
+							result.Protocols = append(result.Protocols, string(p))
+						}
+					}
+					if result.Agent != "" || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
 			if result.CrawlError != nil {
 				result.CrawlErrorStr = db.NetError(result.CrawlError)
 			}
-
-			// The original GossipSub and Identify logic is omitted as it was
-			// dependent on the original libp2p host and connection object.
-			// The primary goal is to replace the neighbor discovery.
 		} else {
-			// if there was a connection error, parse it to a known one
-			result.ConnectErrorStr = db.NetError(result.ConnectError)
+			result.ConnectError = err
+			result.ConnectErrorStr = db.NetError(err)
 		}
 
 		// send the result back and close channel
@@ -126,48 +131,60 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 }
 
 // connect establishes a connection to the given peer.
-func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (*algonet.P2PNetwork, error) {
-
+func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (*algonet.P2PNetwork, func(), error) {
 	if len(pi.Addrs) == 0 {
-		return nil, fmt.Errorf("no addresses provided for peer %s", pi.ID)
+		return nil, nil, fmt.Errorf("no addresses provided for peer %s", pi.ID)
 	}
 
-	// Construct the full multiaddresses for the target peer.
-	// e.g., /ip4/1.2.3.4/tcp/1234 + /p2p/QmPeerID...
-	// becomes /ip4/1.2.3.4/tcp/1234/p2p/QmPeerID...
+	// Build full p2p multiaddrs for the target peer.
 	p2pAddr, err := ma.NewMultiaddr("/p2p/" + pi.ID.String())
 	if err != nil {
-		return nil, fmt.Errorf("invalid p2p multiaddr for peer %s: %w", pi.ID, err)
+		return nil, nil, fmt.Errorf("invalid p2p multiaddr for peer %s: %w", pi.ID, err)
 	}
-
 	peerAddresses := make([]string, 0, len(pi.Addrs))
 	for _, addr := range pi.Addrs {
-		fullAddr := addr.Encapsulate(p2pAddr)
-		peerAddresses = append(peerAddresses, fullAddr.String())
+		full := addr.Encapsulate(p2pAddr)
+		peerAddresses = append(peerAddresses, full.String())
 	}
 
 	log := logging.NewLogger()
 	log.SetLevel(logging.Info)
 
 	cfg := config.GetDefaultLocal()
-	cfg.DNSBootstrapID = "" // Should be commented out if you want to use DNS bootstrap
-	//cfg.EnableDHTProviders = true // Enable DHT providers to find peers
-	cfg.EnableP2P = true // Enable P2P networking
-	cfg.NetAddress = "0.0.0.0:4161"
+	cfg.DNSBootstrapID = ""
+	cfg.EnableP2P = true
+	cfg.NetAddress = "0.0.0.0:0"
 	cfg.GossipFanout = 1
+
 	dataDir, err := os.MkdirTemp("", "algorand-crawler")
 	if err != nil {
-		log.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(dataDir)
-
-	genesisInfo := algonet.GenesisInfo{
-		GenesisID: "testnet-v1.0",
-		NetworkID: "testnet",
+		return nil, nil, fmt.Errorf("create temp dir: %w", err)
 	}
 
+	var networkName = c.cfg.Network
+
+	var genesisInfo algonet.GenesisInfo
+	switch networkName {
+	case crawlerconfig.NetworkAlgoMainnet:
+		genesisInfo = algonet.GenesisInfo{
+			GenesisID: "mainnet-v1.0",
+			NetworkID: "mainnet",
+		}
+	case crawlerconfig.NetworkAlgoTestnet:
+		genesisInfo = algonet.GenesisInfo{
+			GenesisID: "testnet-v1.0",
+			NetworkID: "testnet",
+		}
+	case crawlerconfig.NetworkAlgoSuppranet:
+		genesisInfo = algonet.GenesisInfo{
+			GenesisID: "suppranet-v1.0",
+			NetworkID: "suppranet",
+		}
+	default:
+		_ = os.RemoveAll(dataDir)
+		return nil, nil, fmt.Errorf("unsupported or non-algorand network specified for p2p crawl: %s", networkName)
+	}
 	nodeInfo := &nopeNodeInfo{}
-
 	var identityOpts *algonet.IdentityOpts
 
 	net, err := algonet.NewP2PNetwork(
@@ -181,42 +198,47 @@ func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (*algonet.P2PNe
 		nil,
 	)
 	if err != nil {
-		log.Fatalf("Failed to create P2P network: %v", err)
+		_ = os.RemoveAll(dataDir)
+		return nil, nil, fmt.Errorf("create P2P network: %w", err)
 	}
-
-	handler := &SimpleMessageHandler{}
-
-	net.RegisterHandlers([]algonet.TaggedMessageHandler{
-		{Tag: aprotocol.TxnTag, MessageHandler: handler},
-	})
 
 	if err := net.Start(); err != nil {
-		log.Fatalf("Failed to start network: %v", err)
+		net.Stop()
+		_ = os.RemoveAll(dataDir)
+		return nil, nil, fmt.Errorf("start P2P network: %w", err)
 	}
-	defer net.Stop()
+	if h := net.HttpServer.StreamHost; h != nil {
+		_, _ = identify.NewIDService(h)
+	}
 
-	log.Infof("Network started. Peer ID: %s", net.PeerID())
-	log.Info("Waiting to connect to peer...")
-	for {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
 		if len(net.GetPeers(algonet.PeersConnectedOut)) > 0 {
-			log.Info("Connected to at least one peer.")
 			break
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			net.Stop()
+			_ = os.RemoveAll(dataDir)
+			return nil, nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
-	return net, err
+
+	cleanup := func() {
+		net.Stop()
+		_ = os.RemoveAll(dataDir)
+	}
+
+	log.Infof("Network started. Peer ID: %s", net.PeerID())
+	return net, cleanup, nil
 }
 
 func (c *Crawler) queryConnectedPeer(ctx context.Context, pi peer.AddrInfo, net *algonet.P2PNetwork) (*core.RoutingTable[PeerInfo], error) {
 	host := net.HttpServer.StreamHost
 
-	// Define the custom protocol ID for Algorand's DHT
-	algorandProtocolID := protocol.ID("/algorand/kad/testnet/kad/1.0.0")
-
-	// Now, create the crawler using the DHT from the connected Algorand node
-	dhtCrawler, err := dhtcrawler.NewDefaultCrawler(host, dhtcrawler.WithProtocols([]protocol.ID{algorandProtocolID}))
+	dhtCrawler, err := dhtcrawler.NewDefaultCrawler(host, dhtcrawler.WithProtocols(c.cfg.Protocols))
 	if err != nil {
-		// If crawler creation fails, return the error wrapped in the target struct format.
 		rt := &core.RoutingTable[PeerInfo]{
 			PeerID: pi.ID,
 			Error:  fmt.Errorf("failed to create dht crawler: %w", err),
@@ -224,11 +246,8 @@ func (c *Crawler) queryConnectedPeer(ctx context.Context, pi peer.AddrInfo, net 
 		return rt, rt.Error
 	}
 
-	// Query the connected peer (pi.ID) for peers closest to its own ID.
-	// This is a simple, effective way to ask "who do you know?"
 	gossipPeers, err := dhtCrawler.DhtRPC.GetClosestPeers(ctx, pi.ID, pi.ID)
 	if err != nil {
-		// If the query fails, populate the error fields and return.
 		rt := &core.RoutingTable[PeerInfo]{
 			PeerID:    pi.ID,
 			Neighbors: []PeerInfo{},
@@ -237,13 +256,11 @@ func (c *Crawler) queryConnectedPeer(ctx context.Context, pi peer.AddrInfo, net 
 		return rt, err
 	}
 
-	// On success, format the gossipPeers into the target routing table structure.
 	routingTable := &core.RoutingTable[PeerInfo]{
 		PeerID:    pi.ID,
 		Neighbors: make([]PeerInfo, 0, len(gossipPeers)), // Pre-allocate slice capacity
 	}
 
-	// Convert each `*peer.AddrInfo` from gossipPeers into the `PeerInfo` type.
 	for _, discoveredPeer := range gossipPeers {
 		if discoveredPeer == nil {
 			continue
@@ -268,7 +285,5 @@ type SimpleMessageHandler struct{}
 
 func (h *SimpleMessageHandler) Handle(msg algonet.IncomingMessage) algonet.OutgoingMessage {
 	fmt.Printf("Received message with tag '%s' from peer: %s\n", msg.Tag, string(msg.Data))
-	// We can choose to broadcast the message further, ignore it, or respond.
-	// For this example, we'll just ignore it.
 	return algonet.OutgoingMessage{Action: algonet.Ignore}
 }

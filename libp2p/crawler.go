@@ -10,6 +10,7 @@ import (
 	"github.com/benbjohnson/clock"
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 	log "github.com/sirupsen/logrus"
 
@@ -28,6 +29,8 @@ type CrawlerConfig struct {
 	LogErrors    bool
 	GossipSubPX  bool
 	Clock        clock.Clock
+	Protocols    []protocol.ID
+	Network      config.Network
 }
 
 func DefaultCrawlerConfig() *CrawlerConfig {

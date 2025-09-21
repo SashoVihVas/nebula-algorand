@@ -239,4 +239,4 @@ replace (
 
 replace github.com/algorand/go-algorand => /Users/aleksandarvasilev/MasterThesis/go-algorand
 
-replace github.com/libp2p/go-libp2p-kad-dht => /Users/aleksandarvasilev/go-libp2p-kad-dht
+replace github.com/libp2p/go-libp2p-kad-dht => github.com/SashoVihVas/go-libp2p-kad-dht v0.29.1-0.20250921143149-37d10a9fb446

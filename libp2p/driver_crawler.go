@@ -94,6 +94,8 @@ func (cfg *CrawlDriverConfig) CrawlerConfig() *CrawlerConfig {
 	crawlerCfg.AddrDialType = cfg.AddrDialType
 	crawlerCfg.GossipSubPX = cfg.GossipSubPX
 	crawlerCfg.LogErrors = cfg.LogErrors
+	crawlerCfg.Protocols = protocol.ConvertFromStrings(cfg.Protocols)
+	crawlerCfg.Network = cfg.Network
 	return crawlerCfg
 }
 
