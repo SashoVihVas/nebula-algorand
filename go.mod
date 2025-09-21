@@ -6,16 +6,16 @@ toolchain go1.23.2
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.31.0
+	github.com/algorand/go-algorand v0.0.0-20250626191507-9adaf5573757
 	github.com/benbjohnson/clock v1.3.5
 	github.com/btcsuite/btcd v0.24.2
-	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/ethereum/go-ethereum v1.15.1
 	github.com/friendsofgo/errors v0.9.2
 	github.com/golang-migrate/migrate/v4 v4.18.2
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/lib/pq v1.10.9
-	github.com/libp2p/go-libp2p v0.41.1
+	github.com/libp2p/go-libp2p v0.39.1
 	github.com/libp2p/go-libp2p-kad-dht v0.29.0
 	github.com/libp2p/go-libp2p-kbucket v0.6.5
 	github.com/libp2p/go-libp2p-pubsub v0.13.1
@@ -50,17 +50,24 @@ require (
 require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	golang.org/x/time v0.8.0 // indirect
 )
 
 require (
 	github.com/ClickHouse/ch-go v0.64.1 // indirect
+	github.com/DataDog/zstd v1.5.2 // indirect
+	github.com/algorand/falcon v0.1.0 // indirect
+	github.com/algorand/go-codec/codec v1.1.10 // indirect
+	github.com/algorand/go-deadlock v0.2.4 // indirect
+	github.com/algorand/go-sumhash v0.1.0 // indirect
+	github.com/algorand/msgp v1.1.60 // indirect
+	github.com/algorand/websocket v1.4.6 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/aws/amazon-ecs-agent/ecs-agent v0.0.0-20250123230738-0f876b5372c9 // indirect
 	github.com/aws/aws-sdk-go v1.55.6 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.4 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
+	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/containerd/cgroups v1.1.0 // indirect
@@ -82,7 +89,9 @@ require (
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
+	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
+	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/pprof v0.0.0-20250208200701-d0013a598941 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
@@ -102,6 +111,9 @@ require (
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/jbenet/goprocess v0.1.4 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
+	github.com/josharian/native v1.1.0 // indirect
+	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/koron/go-ssdp v0.0.5 // indirect
@@ -113,9 +125,13 @@ require (
 	github.com/libp2p/go-libp2p-routing-helpers v0.7.4 // indirect
 	github.com/libp2p/go-netroute v0.2.2 // indirect
 	github.com/libp2p/go-reuseport v0.4.0 // indirect
+	github.com/libp2p/go-yamux/v4 v4.0.2 // indirect
 	github.com/libp2p/go-yamux/v5 v5.0.0 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/marten-seemann/tcp v0.0.0-20210406111302-dfbc87cc63fd // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mdlayher/netlink v1.7.2 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/miekg/dns v1.1.63 // indirect
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b // indirect
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
@@ -131,6 +147,7 @@ require (
 	github.com/multiformats/go-multistream v0.6.0 // indirect
 	github.com/multiformats/go-varint v0.0.7 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/olivere/elastic v6.2.14+incompatible // indirect
 	github.com/onsi/ginkgo/v2 v2.22.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0 // indirect
@@ -138,6 +155,7 @@ require (
 	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
+	github.com/petermattis/goid v0.0.0-20241025130422-66cb2e6d7274 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
@@ -202,6 +220,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250212204824-5a70512c5d8b // indirect
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
+	gopkg.in/sohlich/elogrus.v3 v3.0.0-20180410122755-1fa29e2f2009 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.4.0 // indirect
 )
@@ -219,3 +238,5 @@ replace (
 )
 
 replace github.com/algorand/go-algorand => /Users/aleksandarvasilev/MasterThesis/go-algorand
+
+replace github.com/libp2p/go-libp2p-kad-dht => /Users/aleksandarvasilev/go-libp2p-kad-dht

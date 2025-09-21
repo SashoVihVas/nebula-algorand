@@ -3,23 +3,26 @@ package libp2p
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"os"
+	//"sync"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
-	kbucket "github.com/libp2p/go-libp2p-kbucket"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/peerstore"
+	//"github.com/libp2p/go-libp2p/core/peerstore"
 	ma "github.com/multiformats/go-multiaddr"
-	log "github.com/sirupsen/logrus"
-	"go.uber.org/atomic"
-	"golang.org/x/sync/errgroup"
+	//"go.uber.org/atomic"
+	//"golang.org/x/sync/errgroup"
 
 	"github.com/dennis-tra/nebula-crawler/core"
 	"github.com/dennis-tra/nebula-crawler/db"
-	pgmodels "github.com/dennis-tra/nebula-crawler/db/models/pg"
+	//pgmodels "github.com/dennis-tra/nebula-crawler/db/models/pg"
+	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/logging"
+	algonet "github.com/algorand/go-algorand/network"
+	algonetp2p "github.com/algorand/go-algorand/network/p2p"
+	aprotocol "github.com/algorand/go-algorand/protocol"
+	dhtcrawler "github.com/libp2p/go-libp2p-kad-dht/crawler"
 )
 
 type P2PResult struct {
@@ -72,130 +75,45 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 
 	go func() {
 		defer close(resultCh)
-		defer func() {
-			// Free connection resources
-			if err := c.host.Network().ClosePeer(pi.ID()); err != nil {
-				log.WithError(err).WithField("remoteID", pi.ID().ShortString()).Warnln("Could not close connection to peer")
-			}
-		}()
+		// No need for the defer function to close the peer connection,
+		// as the 'net' object from 'connect' handles its own lifecycle.
 
 		result := P2PResult{
 			RoutingTable: &core.RoutingTable[PeerInfo]{PeerID: pi.ID()},
 		}
 
-		// register the given peer (before connecting) to receive
-		// the identify result on the returned channel
-		identifyChan := c.host.RegisterIdentify(pi.ID())
+		// The original code used c.host to register for identify results.
+		// Since the new logic uses a separate network stack from the `connect` function,
+		// the original identify logic may no longer be applicable in the same way.
+		// For this adjustment, we focus on the DHT query part as requested.
+		// If identify information is still needed, it would require a deeper integration
+		// with the algonet stack.
 
-		var conn network.Conn
+		var net *algonet.P2PNetwork // Adjusted type to match 'connect' return
 		result.ConnectStartTime = time.Now()
-		conn, result.ConnectError = c.connect(ctx, pi.AddrInfo) // use filtered addr list
+		net, result.ConnectError = c.connect(ctx, pi.AddrInfo) // use filtered addr list
 		result.ConnectEndTime = time.Now()
 
 		// If we could successfully connect to the peer we actually crawl it.
 		if result.ConnectError == nil {
-			// keep track of the multi address over which we successfully connected
-			result.ConnectMaddr = conn.RemoteMultiaddr()
+			// Note: The original logic for getting ConnectMaddr, Transport, Agent, Protocols
+			// was tied to the libp2p `network.Conn` and `identify` service.
+			// The new `connect` function returns an `algonet.P2PNetwork` object.
+			// We proceed with the core requirement: draining buckets with the new logic.
 
-			// keep track of the transport of the open connection
-			result.Transport = conn.ConnState().Transport
-
-			// Fetch all neighbors
-			result.RoutingTable, result.CrawlError = c.drainBuckets(ctx, pi.AddrInfo)
+			// Fetch all neighbors using the new logic
+			result.RoutingTable, result.CrawlError = c.queryConnectedPeer(ctx, pi.AddrInfo, net)
 			if result.CrawlError != nil {
 				result.CrawlErrorStr = db.NetError(result.CrawlError)
 			}
 
-			// wait for the Identify exchange to complete (no-op if already done)
-			// the internal timeout is set to 30 s. When crawling we only allow 5s.
-			timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-
-			select {
-			case <-timeoutCtx.Done():
-				// identification timed out.
-			case identify, more := <-identifyChan:
-				// identification may have succeeded.
-				if !more {
-					break
-				}
-
-				result.Agent = identify.AgentVersion
-				result.ListenMaddrs = identify.ListenAddrs
-				result.Protocols = make([]string, len(identify.Protocols))
-				for i := range identify.Protocols {
-					result.Protocols[i] = string(identify.Protocols[i])
-				}
-			}
-
-			if c.cfg.GossipSubPX {
-				// give the other peer a chance to open a stream to and prune us
-				streams := openInboundGossipSubStreams(c.host, pi.ID())
-
-				// The maximum time to wait for the gossipsub px to complete
-				maxGossipSubWait := c.cfg.DialTimeout
-
-				// the minimum time to wait for the gossipsub px to start
-				minGossipSubWait := 2 * time.Second
-
-				// the time since we're connected to the peer
-				elapsed := time.Since(result.ConnectEndTime)
-
-				// the remaining time until the maximum wait time is reached
-				remainingWait := maxGossipSubWait - elapsed
-
-				// the interval to check the open gossipsub streams
-				interval := 250 * time.Millisecond
-
-				// if 1) we are supposed to wait a little longer for the
-				// gossipsub exchange (remainingWait > 0) and 2) we either have
-				// at least one open gossipsubstream or haven't waited long enough
-				// for such a stream to be there yet then we will enter the for
-				// loop that waits the calculated remaining time before exiting
-				// or until we don't have any open gossipsub streams anymore by
-				// checking every 250ms if there are still any.
-
-				if remainingWait > 0 && (streams != 0 || elapsed < minGossipSubWait) {
-
-					// if we don't have an open stream yet and the check
-					// interval is way below the minimum wait time we increase
-					// the initial ticker delay
-					initialTickerDelay := interval
-					if streams == 0 && minGossipSubWait-elapsed > interval {
-						initialTickerDelay = minGossipSubWait - elapsed
-					}
-
-					timer := time.NewTimer(remainingWait)
-					ticker := time.NewTicker(initialTickerDelay)
-
-					defer timer.Stop()
-					defer ticker.Stop()
-
-					for {
-						select {
-						case <-ctx.Done():
-							// exit for loop because the context was cancelled
-						case <-timer.C:
-							// exit for loop because the maximum wait time was reached
-						case <-ticker.C:
-							ticker.Reset(interval)
-							if openInboundGossipSubStreams(c.host, pi.ID()) != 0 {
-								continue
-							}
-							// exit for loop because we don't have any open
-							// streams despite waiting minGossipSubWait
-						}
-						break
-					}
-				}
-			}
+			// The original GossipSub and Identify logic is omitted as it was
+			// dependent on the original libp2p host and connection object.
+			// The primary goal is to replace the neighbor discovery.
 		} else {
 			// if there was a connection error, parse it to a known one
 			result.ConnectErrorStr = db.NetError(result.ConnectError)
 		}
-
-		// deregister peer from identify messages
-		c.host.DeregisterIdentify(pi.ID())
 
 		// send the result back and close channel
 		select {
@@ -208,178 +126,149 @@ func (c *Crawler) crawlP2P(ctx context.Context, pi PeerInfo) <-chan P2PResult {
 }
 
 // connect establishes a connection to the given peer.
-func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (network.Conn, error) {
+func (c *Crawler) connect(ctx context.Context, pi peer.AddrInfo) (*algonet.P2PNetwork, error) {
+
 	if len(pi.Addrs) == 0 {
-		return nil, db.ErrNoPublicIP
+		return nil, fmt.Errorf("no addresses provided for peer %s", pi.ID)
 	}
 
-	// init an exponential backoff
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = time.Second
-	bo.MaxInterval = 10 * time.Second
-	bo.MaxElapsedTime = time.Minute
-	bo.Clock = c.cfg.Clock
+	// Construct the full multiaddresses for the target peer.
+	// e.g., /ip4/1.2.3.4/tcp/1234 + /p2p/QmPeerID...
+	// becomes /ip4/1.2.3.4/tcp/1234/p2p/QmPeerID...
+	p2pAddr, err := ma.NewMultiaddr("/p2p/" + pi.ID.String())
+	if err != nil {
+		return nil, fmt.Errorf("invalid p2p multiaddr for peer %s: %w", pi.ID, err)
+	}
 
-	// keep track of retries for debug logging
-	retry := 0
+	peerAddresses := make([]string, 0, len(pi.Addrs))
+	for _, addr := range pi.Addrs {
+		fullAddr := addr.Encapsulate(p2pAddr)
+		peerAddresses = append(peerAddresses, fullAddr.String())
+	}
 
+	log := logging.NewLogger()
+	log.SetLevel(logging.Info)
+
+	cfg := config.GetDefaultLocal()
+	cfg.DNSBootstrapID = "" // Should be commented out if you want to use DNS bootstrap
+	//cfg.EnableDHTProviders = true // Enable DHT providers to find peers
+	cfg.EnableP2P = true // Enable P2P networking
+	cfg.NetAddress = "0.0.0.0:4161"
+	cfg.GossipFanout = 1
+	dataDir, err := os.MkdirTemp("", "algorand-crawler")
+	if err != nil {
+		log.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dataDir)
+
+	genesisInfo := algonet.GenesisInfo{
+		GenesisID: "testnet-v1.0",
+		NetworkID: "testnet",
+	}
+
+	nodeInfo := &nopeNodeInfo{}
+
+	var identityOpts *algonet.IdentityOpts
+
+	net, err := algonet.NewP2PNetwork(
+		log,
+		cfg,
+		dataDir,
+		peerAddresses,
+		genesisInfo,
+		nodeInfo,
+		identityOpts,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("Failed to create P2P network: %v", err)
+	}
+
+	handler := &SimpleMessageHandler{}
+
+	net.RegisterHandlers([]algonet.TaggedMessageHandler{
+		{Tag: aprotocol.TxnTag, MessageHandler: handler},
+	})
+
+	if err := net.Start(); err != nil {
+		log.Fatalf("Failed to start network: %v", err)
+	}
+	defer net.Stop()
+
+	log.Infof("Network started. Peer ID: %s", net.PeerID())
+	log.Info("Waiting to connect to peer...")
 	for {
-		logEntry := log.WithFields(log.Fields{
-			"timeout":  c.cfg.DialTimeout.String(),
-			"remoteID": pi.ID.String(),
-			"retry":    retry,
-			"maddrs":   pi.Addrs,
-		})
-		logEntry.Debugln("Connecting to peer", pi.ID.ShortString())
-
-		// save addresses into the peer store temporarily
-		c.host.Peerstore().AddAddrs(pi.ID, pi.Addrs, peerstore.TempAddrTTL)
-
-		timeoutCtx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
-		conn, err := c.host.Network().DialPeer(timeoutCtx, pi.ID)
-		cancel()
-
-		// yay, it worked! Or has it? The caller checks the connectedness again.
-		if err == nil {
-			log.Infof("Successfully connected to peer %s", pi.ID.ShortString())
-			return conn, nil
+		if len(net.GetPeers(algonet.PeersConnectedOut)) > 0 {
+			log.Info("Connected to at least one peer.")
+			break
 		}
-
-		log.WithError(err).Errorf("Failed to connect to peer %s. Full error: %v", pi.ID.ShortString(), err)
-
-		switch true {
-		case strings.Contains(err.Error(), db.ErrorStr[pgmodels.NetErrorConnectionRefused]):
-			// Might be transient because the remote doesn't want us to connect.
-			// Try again, but reduce the maximum elapsed time because it's still
-			// unlikely to succeed
-			bo.MaxElapsedTime = 2 * c.cfg.DialTimeout
-		case strings.Contains(err.Error(), db.ErrorStr[pgmodels.NetErrorConnectionGated]):
-			// Hints at a configuration issue and should not happen, but if it
-			// does it could be transient. Try again anyway, but at least log a warning.
-			logEntry.WithError(err).Warnln("Connection gated!")
-		case strings.Contains(err.Error(), db.ErrorStr[pgmodels.NetErrorCantAssignRequestedAddress]):
-			// Transient error due to local UDP issues. Try again!
-		case strings.Contains(err.Error(), "dial backoff"):
-			// should not happen because we disabled backoff checks with our
-			// go-libp2p fork. Try again anyway, but at least log a warning.
-			logEntry.WithError(err).Warnln("Dial backoff!")
-		case strings.Contains(err.Error(), "RESOURCE_LIMIT_EXCEEDED (201)"): // thrown by a circuit relay
-			// We already have too many open connections over a relay. Try again!
-		default:
-			logEntry.WithError(err).Debugln("Failed connecting to peer", pi.ID.ShortString())
-			return nil, err
-		}
-
-		sleepDur := bo.NextBackOff()
-		if sleepDur == backoff.Stop {
-			logEntry.WithError(err).Debugln("Exceeded retries connecting to peer", pi.ID.ShortString())
-			return nil, err
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(sleepDur):
-			retry += 1
-			continue
-		}
-
+		time.Sleep(2 * time.Second)
 	}
+	return net, err
 }
 
-// drainBuckets sends RPC messages to the given peer and asks for its closest peers to an artificial set
-// of 15 random peer IDs with increasing common prefix lengths (CPL).
-func (c *Crawler) drainBuckets(ctx context.Context, pi peer.AddrInfo) (*core.RoutingTable[PeerInfo], error) {
-	rt, err := kbucket.NewRoutingTable(20, kbucket.ConvertPeerID(pi.ID), time.Hour, nil, time.Hour, nil)
+func (c *Crawler) queryConnectedPeer(ctx context.Context, pi peer.AddrInfo, net *algonet.P2PNetwork) (*core.RoutingTable[PeerInfo], error) {
+	host := net.HttpServer.StreamHost
+
+	// Define the custom protocol ID for Algorand's DHT
+	algorandProtocolID := protocol.ID("/algorand/kad/testnet/kad/1.0.0")
+
+	// Now, create the crawler using the DHT from the connected Algorand node
+	dhtCrawler, err := dhtcrawler.NewDefaultCrawler(host, dhtcrawler.WithProtocols([]protocol.ID{algorandProtocolID}))
 	if err != nil {
-		return nil, err
+		// If crawler creation fails, return the error wrapped in the target struct format.
+		rt := &core.RoutingTable[PeerInfo]{
+			PeerID: pi.ID,
+			Error:  fmt.Errorf("failed to create dht crawler: %w", err),
+		}
+		return rt, rt.Error
 	}
 
-	allNeighborsLk := sync.RWMutex{}
-	allNeighbors := map[peer.ID]peer.AddrInfo{}
-
-	// errorBits tracks at which CPL errors have occurred.
-	// 0000 0000 0000 0000 - No error
-	// 0000 0000 0000 0001 - An error has occurred at CPL 0
-	// 1000 0000 0000 0001 - An error has occurred at CPL 0 and 15
-	errorBits := atomic.NewUint32(0)
-
-	errg := errgroup.Group{}
-	for i := uint(0); i <= 15; i++ { // 15 is maximum
-		count := i // Copy value
-		errg.Go(func() error {
-			neighbors, err := c.drainBucket(ctx, rt, pi.ID, count)
-			if err != nil {
-				errorBits.Add(1 << count)
-				return err
-			}
-
-			allNeighborsLk.Lock()
-			for _, n := range neighbors {
-				allNeighbors[n.ID] = *n
-			}
-			allNeighborsLk.Unlock()
-
-			return nil
-		})
+	// Query the connected peer (pi.ID) for peers closest to its own ID.
+	// This is a simple, effective way to ask "who do you know?"
+	gossipPeers, err := dhtCrawler.DhtRPC.GetClosestPeers(ctx, pi.ID, pi.ID)
+	if err != nil {
+		// If the query fails, populate the error fields and return.
+		rt := &core.RoutingTable[PeerInfo]{
+			PeerID:    pi.ID,
+			Neighbors: []PeerInfo{},
+			Error:     err,
+		}
+		return rt, err
 	}
-	err = errg.Wait()
 
+	// On success, format the gossipPeers into the target routing table structure.
 	routingTable := &core.RoutingTable[PeerInfo]{
 		PeerID:    pi.ID,
-		Neighbors: []PeerInfo{},
-		ErrorBits: uint16(errorBits.Load()),
-		Error:     err,
+		Neighbors: make([]PeerInfo, 0, len(gossipPeers)), // Pre-allocate slice capacity
 	}
 
-	for _, n := range allNeighbors {
-		routingTable.Neighbors = append(routingTable.Neighbors, PeerInfo{AddrInfo: n})
+	// Convert each `*peer.AddrInfo` from gossipPeers into the `PeerInfo` type.
+	for _, discoveredPeer := range gossipPeers {
+		if discoveredPeer == nil {
+			continue
+		}
+		routingTable.Neighbors = append(routingTable.Neighbors, PeerInfo{AddrInfo: *discoveredPeer})
 	}
 
-	return routingTable, err
+	return routingTable, nil
 }
 
-func (c *Crawler) drainBucket(ctx context.Context, rt *kbucket.RoutingTable, pid peer.ID, bucket uint) ([]*peer.AddrInfo, error) {
-	// Generate a peer with the given common prefix length
-	rpi, err := rt.GenRandPeerID(bucket)
-	if err != nil {
-		log.WithError(err).WithField("enr", pid.ShortString()).WithField("bucket", bucket).Warnln("Failed generating random peer ID")
-		return nil, fmt.Errorf("generating random peer ID with CPL %d: %w", bucket, err)
-	}
+type nopeNodeInfo struct{}
 
-	var neighbors []*peer.AddrInfo
-	for retry := 0; retry < 2; retry++ {
-		neighbors, err = c.pm.GetClosestPeers(ctx, pid, rpi)
-		if err == nil {
-			// getting closest peers was successful!
-			return neighbors, nil
-		}
+func (n *nopeNodeInfo) IsParticipating() bool {
+	return false
+}
 
-		var sleepDur time.Duration
-		switch true {
-		case strings.HasSuffix(err.Error(), network.ErrResourceLimitExceeded.Error()):
-			// the remote has responded with a resource limit exceeded error. Try again soon!
-			sleepDur = time.Second * time.Duration(3*(retry+1))
-		case strings.Contains(err.Error(), "connection failed"):
-			// This error happens in: https://github.com/libp2p/go-libp2p/blob/851f49d5edc46a24131a11f06df648602cd5968c/p2p/host/basic/basic_host.go#L648
-			// we were connected to the remote but couldn't open a stream because
-			// we lost the connection. Try again immediately! GetClosestPeers
-			// internally calls NewStream on the basichost.Host which attempts
-			// to connect to the peer again.
-			sleepDur = 0
-		default:
-			// this is an unhandled error and we won't try again.
-			return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
-		}
+func (n *nopeNodeInfo) Capabilities() []algonetp2p.Capability {
+	return nil
+}
 
-		// the other node has indicated that it's out of resources. Wait a bit and try again.
-		select {
-		case <-time.After(sleepDur): // may add jitter here
-			continue
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
+type SimpleMessageHandler struct{}
 
-	return nil, fmt.Errorf("getting closest peer with CPL %d: %w", bucket, err)
+func (h *SimpleMessageHandler) Handle(msg algonet.IncomingMessage) algonet.OutgoingMessage {
+	fmt.Printf("Received message with tag '%s' from peer: %s\n", msg.Tag, string(msg.Data))
+	// We can choose to broadcast the message further, ignore it, or respond.
+	// For this example, we'll just ignore it.
+	return algonet.OutgoingMessage{Action: algonet.Ignore}
 }
